@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
+#include <bolt/messages.h>
 #include <bolt/panic.h>
 #include <err.h>
 #include <string>
@@ -169,12 +170,15 @@ parse_address_result try_resolve_address(const std::string& input)
 
 void write_until_pending(
         int32_t client_fd,
-        char* &write_pos,
-        int &write_pending_len,
-        ssize_t &num_written)
+        std::vector<std::byte> &buffer,
+        uint64_t &write_pos)
 {
-    while (write_pending_len > 0) {
-        num_written = write(client_fd, write_pos, write_pending_len);
+    if (buffer.empty()) { return; }
+
+    uint64_t remaining_len = (buffer.size() - 1)  - write_pos;
+    uint64_t num_written = 0;
+    while (remaining_len > 0) {
+        num_written = write(client_fd, buffer.data() + write_pos, remaining_len);
         if (num_written < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
@@ -184,7 +188,7 @@ void write_until_pending(
         }
 
         write_pos += num_written;
-        write_pending_len -= num_written;
+        remaining_len -= num_written;
     }
 }
 
@@ -204,7 +208,7 @@ int main()
     // Mark server socket for reading and edge-triggering
     struct epoll_event tmp_epoll_event = {};
     tmp_epoll_event.data.fd = client_fd;
-    tmp_epoll_event.events = EPOLLIN | EPOLLET;
+    tmp_epoll_event.events = EPOLLIN | EPOLLOUT | EPOLLET;
 
     result = epoll_ctl(epollfd, EPOLL_CTL_ADD, client_fd, &tmp_epoll_event);
     PANIC_IF_NEG_WITH_ERRNO(result, "epoll_ctl(EPOLL_CTL_ADD)");
@@ -238,22 +242,28 @@ int main()
         }
     }
 
-    char *write_pos = nullptr;
+    uint64_t write_pos = 0;
     int write_pending_len = 0;
     ssize_t num_written;
-    char write_buf[4096] = {0};
+    std::vector<std::byte> write_buf(4096);
 
     if (write_pending_len <= 0) {
         // TODO: Do the next task
         fprintf(stderr, "debug: request `LIST` command");
-        int len = snprintf(write_buf, 4096, "LIST\n");
-        PANIC_IF_NEG_WITH_ERRNO(len, "snprintf");
 
-        write_pending_len = len;
-        write_pos = write_buf;
+        struct BOLT_REQUEST_ACTION_T request = BOLT_REQUEST_ACTION_FORMAT;
+        BF_SET_STR(request.requestAction) = "LIST";
+        uint64_t request_size = BF_recomputePhysicalSize((BF_MessageElement *) &request, BF_NUM_ELEMENTS(sizeof(request)));
+        write_buf.resize(request_size);
+        write_pos = 0;
+
+        uint64_t wrote_size = BF_write((BF_MessageElement *) &request, write_buf.data(), BF_NUM_ELEMENTS(sizeof(request)));
+        if (wrote_size > request_size) {
+            PANIC("buffer overflow");
+        }
     }
 
-    write_until_pending(client_fd, write_pos, write_pending_len, num_written);
+    write_until_pending(client_fd, write_buf, write_pos);
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "EndlessLoop"
@@ -296,8 +306,7 @@ int main()
                 fwrite(buf, sizeof(char), num_bytes, stdout);
             }
 
-            write_until_pending(client_fd, write_pos, write_pending_len, num_written);
-
+            write_until_pending(client_fd, write_buf, write_pos);
             fprintf(stderr, "debug: finished loop\n");
         }
     }
