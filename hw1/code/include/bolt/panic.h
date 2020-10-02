@@ -45,7 +45,7 @@
         if (_VAR < 0) { \
             int err = errno; \
             char errmsg[256] = {}; \
-            strerror_r(err, errmsg, sizeof(errmsg)); \
+            strerror_r(err, errmsg, 256); \
             PANIC("%s: %s", _FUNCNAME, errmsg); \
         } \
     } while (0)

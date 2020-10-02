@@ -25,7 +25,7 @@ void set_nonblocking(int fd)
 }
 
 #define MAXEVENTS 64
-#define BOLD_DEFAULT_PORT 9000
+#define BOLT_DEFAULT_PORT 9000
 
 void bolt_read_pending(int event_fd, void *buf, size_t buf_size)
 {
@@ -103,7 +103,7 @@ int main()
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons(BOLD_DEFAULT_PORT);
+    addr.sin_port = htons(BOLT_DEFAULT_PORT);
 
     result = bind(server_fd, reinterpret_cast<const sockaddr *>(&addr), sizeof(addr));
     PANIC_IF_NEG_WITH_ERRNO(result, "bind");
@@ -114,7 +114,7 @@ int main()
     // Listen on socket
     result = listen(server_fd, SOMAXCONN);
     PANIC_IF_NEG_WITH_ERRNO(result, "listen");
-    printf("info: listening on localhost:%d\n", BOLD_DEFAULT_PORT);
+    printf("info: listening on localhost:%d\n", BOLT_DEFAULT_PORT);
 
     // Create epoll fd
     int32_t epollfd = epoll_create1(0);
