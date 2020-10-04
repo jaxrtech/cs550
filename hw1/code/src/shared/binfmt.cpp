@@ -1,6 +1,8 @@
 #include "bolt/binfmt.h"
 #include <bolt/panic.h>
 #include <cstring>
+#include <cstdint>
+#include <cstddef>
 
 extern "C" {
 
@@ -109,7 +111,7 @@ BF_write_single(BF_MessageElement *self, void *buffer)
 }
 
 uint64_t
-BF_write(BF_MessageElement *arr, void *buffer, uint32_t num_elements)
+BF_write(BF_MessageElement *arr, uint32_t num_elements, void *buffer)
 {
     void *buffer_orig = buffer;
 
@@ -120,34 +122,41 @@ BF_write(BF_MessageElement *arr, void *buffer, uint32_t num_elements)
     return ((char *) buffer) - ((char *) buffer_orig);
 }
 
-uint16_t
-BF_read_single(BF_MessageElement *self, void *buffer)
+uint64_t
+BF_read_single(BF_MessageElement *self, void *buffer, uint64_t len)
 {
+#define _BF_REMAINING_LEN (len - ((size_t) buffer - (size_t) buffer_orig))
     void *buffer_orig = buffer;
 
     switch (self->type) {
         case BF_UINT8:
-            RM_BUF_READ(buffer, uint8_t, self->u8);
+            RM_BUF_READ_OR_RETURN_ZERO(buffer, len, uint8_t, self->u8);
             break;
 
         case BF_UINT16:
-            RM_BUF_READ(buffer, uint16_t, self->u16);
+            RM_BUF_READ_OR_RETURN_ZERO(buffer, len, uint16_t, self->u16);
             break;
 
         case BF_INT32:
-            RM_BUF_READ(buffer, int32_t, self->i32);
+            RM_BUF_READ_OR_RETURN_ZERO(buffer, len, int32_t, self->i32);
             break;
 
         case BF_LSTRING:
-            RM_BUF_READ(buffer, uint8_t, self->lstring.cached_strlen);
+            RM_BUF_READ_OR_RETURN_ZERO(buffer, len, uint8_t, self->lstring.cached_strlen);
             self->lstring.str = (char *) buffer;
             buffer = (char *) buffer + self->lstring.cached_strlen;
+            if (len - ((size_t) buffer - (size_t) buffer_orig) < self->lstring.cached_strlen) {
+                return 0;
+            }
             break;
 
         case BF_ARRAY_UINT8:
-            RM_BUF_READ(buffer, uint8_t, self->array_u8.len);
+            RM_BUF_READ_OR_RETURN_ZERO(buffer, len, uint8_t, self->array_u8.len);
             self->array_u8.buf = (uint8_t *) buffer;
             buffer = (char *) buffer + self->array_u8.len;
+            if (_BF_REMAINING_LEN < self->array_u8.len) {
+                return 0;
+            }
             break;
 
         case BF_ARRAY_MSG: {
@@ -158,7 +167,12 @@ BF_read_single(BF_MessageElement *self, void *buffer)
             for (int i = 0; i < n; i++) {
                 const uint8_t ti = i % k;
                 memcpy(&self->array_msg.data[i], &self->array_msg.type[ti], sizeof(BF_MessageElement));
-                buffer = (char *) buffer + BF_read_single(&self->array_msg.data[i], buffer);
+                uint64_t off = BF_read_single(&self->array_msg.data[i], buffer, _BF_REMAINING_LEN);
+                if (off == 0) {
+                    free(self->array_msg.data);
+                    return 0;
+                }
+                buffer = (char *) buffer + off;
             }
             break;
         }
@@ -170,13 +184,17 @@ BF_read_single(BF_MessageElement *self, void *buffer)
     return ((char *) buffer) - ((char *) buffer_orig);
 }
 
-uint16_t
-BF_read(BF_MessageElement *arr, void *buffer, uint8_t num_elements)
+uint64_t
+BF_read(BF_MessageElement *arr, uint32_t num_elements, void *buffer, uint64_t len)
 {
     void *buffer_orig = buffer;
 
-    for (int i = 0; i < num_elements; i++) {
-        buffer = (char *) buffer + BF_read_single(&arr[i], buffer);
+    for (uint32_t i = 0; i < num_elements; i++) {
+        uint64_t offset = BF_read_single(&arr[i], buffer, _BF_REMAINING_LEN);
+        if (offset == 0) {
+            return 0;
+        }
+        buffer = (char *) buffer + offset;
     }
 
     return ((char *) buffer) - ((char *) buffer_orig);

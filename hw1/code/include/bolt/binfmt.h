@@ -144,6 +144,15 @@ typedef struct BF_MessageElement {
         BUFFER = ((char *) (BUFFER)) + sizeof(TYPE); \
     } while (0)
 
+#define RM_BUF_READ_OR_RETURN_ZERO(BUFFER, LEN, TYPE, DEST) \
+    do { \
+        if (sizeof(TYPE) < (LEN)) { \
+            return 0; \
+        } \
+        DEST = *(TYPE *) (BUFFER); \
+        BUFFER = ((char *) (BUFFER)) + sizeof(TYPE); \
+    } while (0)
+
 //write val to buffer by casting val to TYPE pointer and dereferencing it
 #define RM_BUF_WRITE(BUFFER, TYPE, VAL) \
     do { \
@@ -176,12 +185,12 @@ uint64_t
 BF_write_single(BF_MessageElement *self, void *buffer);
 
 uint64_t
-BF_write(BF_MessageElement *arr, void *buffer, uint32_t num_elements);
+BF_write(BF_MessageElement *arr, uint32_t num_elements, void *buffer);
 
-uint16_t
-BF_read_single(BF_MessageElement *self, void *buffer);
+uint64_t
+BF_read_single(BF_MessageElement *self, void *buffer, uint64_t len);
 
-uint16_t
-BF_read(BF_MessageElement *arr, void *buffer, uint8_t num_elements);
+uint64_t
+BF_read(BF_MessageElement *arr, uint32_t num_elements, void *buffer, uint64_t len);
 
 }

@@ -9,7 +9,13 @@
 #include <sys/socket.h>
 #include <sys/epoll.h>
 
+#include <algorithm>
 #include <bolt/panic.h>
+#include <err.h>
+#include <map>
+#include <sstream>
+#include <string>
+#include <sys/stat.h>
 
 namespace bolt::internal {
 
@@ -26,33 +32,6 @@ void set_nonblocking(int fd)
 
 #define MAXEVENTS 64
 #define BOLT_DEFAULT_PORT 9000
-
-void bolt_read_pending(int event_fd, void *buf, size_t buf_size)
-{
-    int32_t result;
-
-    while (true) {
-        ssize_t num_bytes = read(event_fd, buf, buf_size);
-        if (num_bytes < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                printf("debug: [%d] read all data from client\n", event_fd);
-                break;
-            }
-
-            PANIC_WITH_ERRNO("read");
-        }
-
-        if (num_bytes == 0) {
-            printf("info: [%d] client disconnected\n", event_fd);
-            result = close(event_fd);
-            WARN_IF_NEG_WITH_ERRNO(result, "failed to close disconnected client socket. close:");
-            break;
-        }
-
-        // TODO: Handle buf input with application logic
-        fwrite(buf, sizeof(char), num_bytes, stdout);
-    }
-}
 
 /**
  * Accepts as many new, pending connections as possible
@@ -84,8 +63,75 @@ void bolt_accept_pending(int32_t epoll_fd, int32_t server_fd)
     }
 }
 
-int main()
+
+struct buf_read_state {
+    buf_read_state()
+            : buffer(4096)
+            , next_pos(0)
+            , is_done(false)
+    {}
+
+    void *offset_ptr() { return buffer.data() + next_pos; }
+    [[nodiscard]] uint64_t buffer_free_capacity() const { return buffer.capacity() - next_pos; }
+    void advance(uint64_t step) { next_pos += step; }
+
+    std::vector<std::byte> buffer;
+    uint64_t next_pos;
+    bool is_done;
+};
+
+int main(int argc, char **argv)
 {
+    char *executable_name = argv[0];
+    PANIC_IF_NULL(executable_name);
+
+    argc--;
+    argv++;
+    std::vector<std::string> args;
+    for (int i = 0; i < argc; i++) {
+        args.emplace_back(argv[i]);
+    }
+
+    std::array<std::string,3> help_options = {"-h", "--help"};
+    auto is_help = [&](const std::string &a) {
+        return std::any_of(
+                help_options.begin(),
+                help_options.end(),
+                [&](const std::string &b) { return a == b; });
+    };
+
+    if (argc > 1 || std::any_of(args.begin(), args.end(), is_help)) {
+        fprintf(stderr, "\nUsage: %s [FILE_DIRECTORY]\n\n", executable_name);
+        fprintf(stderr, "A parallel file transfer server.\n\n");
+        fprintf(stderr, "Developed by Josh Bowden (A20374650)\n");
+        fprintf(stderr, "Illinois Institute of Technology - CS550 - Fall 2020\n");
+        return 1;
+    }
+
+    std::string serve_path;
+    if (argc > 0) {
+        char *serve_path_raw = argv[0];
+        struct stat sb = {};
+        bool serve_path_exists = stat(serve_path_raw, &sb) == 0;
+        bool serve_path_is_dir = S_ISDIR(sb.st_mode);
+
+        if (!serve_path_exists) {
+            fprintf(stderr, "error: directory does not exist: '%s'\n", serve_path_raw);
+            return 1;
+        }
+
+        if (!serve_path_is_dir) {
+            fprintf(stderr, "error: expected path to be a directory but got a file: '%s'\n", serve_path_raw);
+            return 1;
+        }
+    }
+    else {
+        serve_path = ".";
+        fprintf(stderr, "warn: serving from current directory since no path specified\n");
+    }
+
+    //
+
     int32_t result;
 
     // Create socket
@@ -129,8 +175,10 @@ int main()
     PANIC_IF_NEG_WITH_ERRNO(result, "epoll_ctl(EPOLL_CTL_ADD)");
 
     // Event loop to receive events
+    std::map<int32_t, buf_read_state> client_states;
     std::vector<struct epoll_event> events(MAXEVENTS);
-    uint8_t buf[4096] = {};
+#define BUFSIZE (4096)
+    uint8_t buf[BUFSIZE] = {};
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "EndlessLoop"
@@ -157,7 +205,30 @@ int main()
             }
 
             // Client socket event, read from pending sockets
-            bolt_read_pending(event_fd, buf, sizeof(buf));
+            auto &read_state = client_states[event_fd];
+            while (true) {
+                printf("debug: [%d] read\n", event_fd);
+                ssize_t num_bytes = read(event_fd, read_state.offset_ptr(), read_state.buffer_free_capacity());
+                printf("debug: [%d] got %ld bytes\n", event_fd, num_bytes);
+
+                if (num_bytes < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        printf("debug: [%d] read all data from client\n", event_fd);
+                        break;
+                    }
+
+                    PANIC_WITH_ERRNO("read");
+                }
+
+                if (num_bytes == 0) {
+                    printf("info: [%d] client disconnected\n", event_fd);
+                    result = close(event_fd);
+                    WARN_IF_NEG_WITH_ERRNO(result, "failed to close disconnected client socket. close:");
+                    break;
+                }
+
+                read_state.advance(num_bytes);
+            }
         }
     }
 #pragma clang diagnostic pop

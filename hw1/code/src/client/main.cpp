@@ -15,6 +15,7 @@
 
 #include <bolt/messages.h>
 #include <bolt/panic.h>
+#include <bolt/queue.h>
 #include <err.h>
 #include <string>
 
@@ -34,33 +35,6 @@ void set_nonblocking(int fd)
 #define MAXEVENTS 64
 #define BOLT_DEFAULT_PORT 9000
 #define BOLT_DEFAULT_SERVER "127.0.0.1"
-
-void bolt_read_pending(int event_fd, void *buf, size_t buf_size)
-{
-    int32_t result;
-
-    while (true) {
-        ssize_t num_bytes = read(event_fd, buf, buf_size);
-        if (num_bytes < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                printf("debug: [%d] read all data from client\n", event_fd);
-                break;
-            }
-
-            PANIC_WITH_ERRNO("read");
-        }
-
-        if (num_bytes == 0) {
-            printf("info: [%d] client disconnected\n", event_fd);
-            result = close(event_fd);
-            WARN_IF_NEG_WITH_ERRNO(result, "failed to close disconnected client socket. close:");
-            break;
-        }
-
-        // TODO: Handle buf input with application logic
-        fwrite(buf, sizeof(char), num_bytes, stdout);
-    }
-}
 
 /**
  * Accepts as many new, pending connections as possible
@@ -168,17 +142,64 @@ parse_address_result try_resolve_address(const std::string& input)
     return result;
 }
 
+
+struct buf_write_state {
+    buf_write_state()
+        : buffer(4096)
+        , write_pos(0)
+    {}
+
+    uint64_t write_pos;
+    std::vector<std::byte> buffer;
+
+    [[nodiscard]] uint64_t remaining_length() const
+    {
+        if (write_pos > buffer.size()) {
+            return 0;
+        }
+        return buffer.size() - write_pos;
+    }
+
+    [[nodiscard]] bool is_done() const {
+        return remaining_length() == 0;
+    }
+};
+
+
+struct buf_read_state {
+    buf_read_state()
+            : buffer(4096)
+            , next_pos(0)
+            , is_done(false)
+    {}
+
+    uint64_t next_pos;
+    std::vector<std::byte> buffer;
+    bool is_done;
+};
+
+
+
 void write_until_pending(
         int32_t client_fd,
-        std::vector<std::byte> &buffer,
-        uint64_t &write_pos)
+        std::optional<buf_write_state> &msg_optional)
 {
-    if (buffer.empty()) { return; }
+    if (!msg_optional.has_value()) {
+        fprintf(stderr, "debug: empty message state\n");
+        return; }
 
-    uint64_t remaining_len = (buffer.size() - 1)  - write_pos;
-    uint64_t num_written = 0;
-    while (remaining_len > 0) {
-        num_written = write(client_fd, buffer.data() + write_pos, remaining_len);
+    auto msg = msg_optional.value();
+    if (msg.buffer.empty()) {
+        fprintf(stderr, "debug: buffer empty\n");
+        return;
+    }
+
+    uint64_t num_written;
+    while (msg.remaining_length() > 0) {
+        num_written = write(client_fd, msg.buffer.data() + msg.write_pos, msg.remaining_length());
+        fprintf(stderr, "debug: wrote %ld bytes\n", num_written);
+        msg.write_pos += num_written;
+
         if (num_written < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
@@ -186,12 +207,25 @@ void write_until_pending(
 
             PANIC_WITH_ERRNO("write");
         }
+    }
 
-        write_pos += num_written;
-        remaining_len -= num_written;
+    if (msg.is_done()) {
+        msg_optional.reset();
     }
 }
 
+
+template<typename Message>
+void binformat_write_to(Message &request, std::vector<std::byte> &write_buf)
+{
+    uint64_t request_size = BF_recomputePhysicalSize((BF_MessageElement *) &request, BF_NUM_ELEMENTS(sizeof(request)));
+    write_buf.resize(request_size);
+
+    uint64_t wrote_size = BF_write((BF_MessageElement *) &request, BF_NUM_ELEMENTS(sizeof(request)), write_buf.data());
+    if (wrote_size > request_size) {
+        PANIC("buffer overflow");
+    }
+}
 
 int main()
 {
@@ -242,28 +276,20 @@ int main()
         }
     }
 
-    uint64_t write_pos = 0;
-    int write_pending_len = 0;
-    ssize_t num_written;
-    std::vector<std::byte> write_buf(4096);
+    bolt::blocking_queue<buf_write_state> send_queue;
+    std::optional<buf_write_state> cur_send_message;
 
-    if (write_pending_len <= 0) {
-        // TODO: Do the next task
-        fprintf(stderr, "debug: request `LIST` command");
+    bolt::blocking_queue<buf_write_state> recv_queue;
+    std::optional<buf_write_state> cur_recv_message;
 
-        struct BOLT_REQUEST_ACTION_T request = BOLT_REQUEST_ACTION_FORMAT;
-        BF_SET_STR(request.requestAction) = "LIST";
-        uint64_t request_size = BF_recomputePhysicalSize((BF_MessageElement *) &request, BF_NUM_ELEMENTS(sizeof(request)));
-        write_buf.resize(request_size);
-        write_pos = 0;
+    fprintf(stderr, "debug: request `LIST` command");
+    struct BOLT_REQUEST_ACTION_T request = BOLT_REQUEST_ACTION_FORMAT;
+    BF_SET_STR(request.requestAction) = "LIST";
+    buf_write_state state;
+    binformat_write_to(request, state.buffer);
+    cur_send_message = state;
 
-        uint64_t wrote_size = BF_write((BF_MessageElement *) &request, write_buf.data(), BF_NUM_ELEMENTS(sizeof(request)));
-        if (wrote_size > request_size) {
-            PANIC("buffer overflow");
-        }
-    }
-
-    write_until_pending(client_fd, write_buf, write_pos);
+    write_until_pending(client_fd, cur_send_message);
 
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "EndlessLoop"
@@ -302,11 +328,11 @@ int main()
                     break;
                 }
 
-                // TODO: Handle buf input with application logic
+                // Read the size of the first `MessageElement`
                 fwrite(buf, sizeof(char), num_bytes, stdout);
             }
 
-            write_until_pending(client_fd, write_buf, write_pos);
+            write_until_pending(client_fd, cur_send_message);
             fprintf(stderr, "debug: finished loop\n");
         }
     }
@@ -314,3 +340,5 @@ int main()
 
     return 0;
 }
+
+
