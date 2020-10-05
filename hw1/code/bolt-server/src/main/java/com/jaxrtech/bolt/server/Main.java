@@ -1,74 +1,75 @@
 package com.jaxrtech.bolt.server;
 
+import com.jaxrtech.bolt.MessageContext;
+import com.jaxrtech.bolt.MessageRegistration;
+import com.jaxrtech.bolt.messages.FileInfo;
+import com.jaxrtech.bolt.messages.FileListingResponse;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
-import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
-import java.nio.channels.*;
-import java.util.Set;
-import java.util.concurrent.*;
-import java.util.function.BiConsumer;
-import java.util.function.Consumer;
+import java.nio.channels.SocketChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 
 public class Main {
 
     public static final int DEFAULT_PORT = 9000;
-    public static final int DEFAULT_BUFFER_SIZE = 32 * 1024;
+    private static Path servePath;
 
     public static void main(String[] args) throws IOException {
+        servePath = Paths.get("").toAbsolutePath();
 
-        Selector selector = Selector.open();
-
-        var server = ServerSocketChannel.open();
+        ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+        var registration = MessageRegistration.defaultSet();
+        var server = new Server(executor, registration, Main::handler);
         var listenAddress = new InetSocketAddress("127.0.0.1", DEFAULT_PORT);
-        server.bind(listenAddress);
-        server.configureBlocking(false);
-        server.register(selector, server.validOps(), null);
 
+        server.listen(listenAddress);
         System.out.println("Listening on " + listenAddress);
 
-        while (true) {
-            selector.select();
-            Set<SelectionKey> readyKeys = selector.selectedKeys();
+        server.run();
+    }
 
-            var iter = readyKeys.iterator();
-            while (iter.hasNext()) {
-                var key = iter.next();
+    private static void handler(MessageContext envelope, ServiceContext context) {
+        var kind = envelope.getMessage().getKind();
+        var executor = context.getExecutor();
+        var objectMapper = context.getMapper();
 
-                try {
-                    if (key.isAcceptable()) {
-                        SocketChannel client = server.accept();
-                        if (client == null) {
-                            continue;
-                        }
-                        client.configureBlocking(false);
-                        client.register(selector, SelectionKey.OP_READ);
-                        log("Accepted: " + client.getLocalAddress() + "\n");
-
-                    } else if (key.isReadable()) {
-                        SocketChannel client = (SocketChannel) key.channel();
-                        SocketAddress remoteAddress = client.getRemoteAddress();
-
-                        ByteBuffer buffer = ByteBuffer.allocate(DEFAULT_BUFFER_SIZE);
-                        int read = client.read(buffer);
-                        if (read < 0) {
-                            client.close();
-                            log(String.format("[%s] Client disconnected", remoteAddress));
-                            continue;
-                        }
-
-                        log(String.format("[%s] Read %d bytes", remoteAddress, read));
-                    }
-                }
-                finally {
-                    iter.remove();
-                }
-            }
+        if (kind.equals("LIST")) {
+            executor.submit(() -> handleList(envelope, context));
         }
     }
 
-    private static void log(String str) {
-        System.out.println(str);
+    private static void handleList(MessageContext envelope, ServiceContext context) {
+        try {
+            SocketChannel channel = envelope.getChannel();
+            List<FileInfo> files = Files.walk(servePath)
+                    .filter(Files::isRegularFile)
+                    .map(x -> {
+                        long size = -1;
+                        try {
+                            size = Files.size(x);
+                        } catch (IOException ignored) {
+                        }
+
+                        return new FileInfo(x.toString(), size);
+                    })
+                    .collect(Collectors.toList());
+
+            var response = new FileListingResponse(files);
+            ByteBuffer buffer = context.getMessageWriter().write(response);
+            buffer.flip();
+            channel.write(buffer);
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
+
 }

@@ -1,7 +1,14 @@
 package com.jaxrtech.bolt.client;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jaxrtech.bolt.BufferContext;
+import com.jaxrtech.bolt.Message;
+import com.jaxrtech.bolt.MessageContext;
+import com.jaxrtech.bolt.MessageReader;
+import com.jaxrtech.bolt.MessageRegistration;
+import com.jaxrtech.bolt.MessageWriter;
+import com.jaxrtech.bolt.messages.FileListingRequest;
+import com.jaxrtech.bolt.messages.FileListingResponse;
 import org.msgpack.jackson.dataformat.MessagePackFactory;
 
 import java.io.IOException;
@@ -9,36 +16,46 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
-import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
 import java.util.Iterator;
-import java.util.Map;
 import java.util.Set;
 
 class Main {
 
+    private static void handler(MessageContext envelope, Object ignored) {
+        Message message = envelope.getMessage();
+        var kind = message.getKind();
+
+        if (kind.equals("FILES")) {
+            FileListingResponse response = (FileListingResponse) message;
+            response.getFiles().forEach(f -> {
+                System.out.printf("> %s (%d bytes)\n", f.getName(), f.getSize());
+            });
+        }
+    }
+
     public static void main(String[] args) throws IOException {
-        Selector selector = Selector.open();
-
-        var serverSocket = SocketChannel.open(new InetSocketAddress("localhost", 9000));
-        serverSocket.configureBlocking(false);
-        serverSocket.finishConnect();
-
-        ByteBuffer buffer = ByteBuffer.allocate(32 * 1024);
-
         ObjectMapper objectMapper = new ObjectMapper(new MessagePackFactory());
+        MessageRegistration registration = MessageRegistration.defaultSet();
+        MessageReader<Object> messageReader = new MessageReader<>(registration, objectMapper, null, Main::handler);
+        BufferContext bufferContext = new BufferContext();
+        MessageWriter writer = new MessageWriter(objectMapper);
+        
+        var selector = Selector.open();
+        var socket = SocketChannel.open(new InetSocketAddress("localhost", 9000));
+        socket.configureBlocking(true);
+        socket.finishConnect();
 
-        Map<String, Object> map = new HashMap<>();
-        map.put("kind", "LIST");
-        byte[] message = objectMapper.writeValueAsBytes(map);
-        buffer.put(message);
+        ByteBuffer buffer = bufferContext.getReadBuffer();
+        writer.writeTo(new FileListingRequest(), buffer);
         buffer.flip();
 
-        int numWrote = serverSocket.write(buffer);
+        int numWrote = socket.write(buffer);
         System.out.println("Wrote " + numWrote + " bytes");
+        buffer.clear();
+
+        socket.configureBlocking(false);
+        socket.register(selector, SelectionKey.OP_READ);
 
         while (true) {
             selector.select();
@@ -49,9 +66,7 @@ class Main {
                 iter.remove();
 
                 if (key.isReadable()) {
-                    SocketChannel client = (SocketChannel) key.channel();
-                    int read = client.read(buffer);
-                    System.out.println("Read " + read + " bytes");
+                    messageReader.read(socket, bufferContext);
                 }
             }
         }

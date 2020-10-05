@@ -10,9 +10,14 @@
         <version>1.0-SNAPSHOT</version>
     </parent>
 
-    <groupId>com.jaxrtech.bolt.server</groupId>
     <artifactId>bolt-server</artifactId>
     <version>1.0-SNAPSHOT</version>
 
-    
+    <dependencies>
+        <dependency>
+            <groupId>com.jaxrtech.bolt</groupId>
+            <artifactId>bolt-core</artifactId>
+            <version>1.0-SNAPSHOT</version>
+        </dependency>
+    </dependencies>
 </project>

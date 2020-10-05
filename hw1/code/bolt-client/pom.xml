@@ -11,9 +11,16 @@
         <version>1.0-SNAPSHOT</version>
     </parent>
 
-    <groupId>com.jaxrtech.bolt.client</groupId>
     <artifactId>bolt-client</artifactId>
     <version>1.0-SNAPSHOT</version>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.jaxrtech.bolt</groupId>
+            <artifactId>bolt-core</artifactId>
+            <version>1.0-SNAPSHOT</version>
+        </dependency>
+    </dependencies>
 
     <build>
         <plugins>
@@ -28,15 +35,6 @@
                         </transformer>
                     </transformers>
                 </configuration>
-
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                    </execution>
-                </executions>
             </plugin>
         </plugins>
     </build>
