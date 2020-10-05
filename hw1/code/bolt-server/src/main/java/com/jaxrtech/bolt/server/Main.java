@@ -1,9 +1,11 @@
 package com.jaxrtech.bolt.server;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jaxrtech.bolt.MessageContext;
 import com.jaxrtech.bolt.MessageRegistration;
 import com.jaxrtech.bolt.messages.FileInfo;
 import com.jaxrtech.bolt.messages.FileListingResponse;
+import org.msgpack.jackson.dataformat.MessagePackFactory;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -27,22 +29,18 @@ public class Main {
 
         ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
         var registration = MessageRegistration.defaultSet();
-        var server = new Server(executor, registration, Main::handler);
+        var server = new Server(registration, new ObjectMapper(new MessagePackFactory()));
         var listenAddress = new InetSocketAddress("127.0.0.1", DEFAULT_PORT);
 
         server.listen(listenAddress);
         System.out.println("Listening on " + listenAddress);
 
-        server.run();
-    }
-
-    private static void handler(MessageContext envelope, ServiceContext context) {
-        var kind = envelope.getMessage().getKind();
-        var executor = context.getExecutor();
-        var objectMapper = context.getMapper();
-
-        if (kind.equals("LIST")) {
-            executor.submit(() -> handleList(envelope, context));
+        while (true) {
+            var envelope = server.readUntilNext();
+            var kind = envelope.getMessage().getKind();
+            if (kind.equals("LIST")) {
+                executor.submit(() -> handleList(envelope, server.getServiceContext()));
+            }
         }
     }
 
@@ -58,7 +56,7 @@ public class Main {
                         } catch (IOException ignored) {
                         }
 
-                        return new FileInfo(x.toString(), size);
+                        return new FileInfo(servePath.relativize(x).toString(), size);
                     })
                     .collect(Collectors.toList());
 

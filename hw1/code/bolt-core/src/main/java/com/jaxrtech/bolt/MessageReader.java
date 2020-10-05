@@ -10,32 +10,24 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.BiConsumer;
 
-public class MessageReader<C> {
+public class MessageReader {
     private static final int PREFIX_SIZE = 4;
-
     private final MessageRegistration registration;
     private final ObjectMapper objectMapper;
-    private final C context;
-    private final BiConsumer<MessageContext, C> handler;
 
     public MessageReader(
             MessageRegistration registration,
-            ObjectMapper objectMapper,
-            C context,
-            BiConsumer<MessageContext, C> handler) {
+            ObjectMapper objectMapper) {
         this.registration = registration;
         this.objectMapper = objectMapper;
-        this.context = context;
-        this.handler = handler;
     }
 
-    private static void log(String str) {
-        System.out.println(str);
+    private static void log(String str, Object... args) {
+//        System.err.printf(str, args);
     }
 
-    public void read(SocketChannel client, BufferContext ctx) throws IOException {
+    public Optional<MessageContext> read(SocketChannel client, BufferContext ctx) throws IOException {
         SocketAddress remoteAddress = client.getRemoteAddress();
         var oldState = ctx.getReadState();
 
@@ -49,12 +41,12 @@ public class MessageReader<C> {
             } catch (IOException ignored) { }
             log(String.format("[%s] Client disconnected", remoteAddress));
             ex.printStackTrace();
-            return;
+            return Optional.empty();
         }
         if (read < 0) {
             client.close();
             log(String.format("[%s] Client disconnected", remoteAddress));
-            return;
+            return Optional.empty();
         }
 
         log(String.format("[%s] Read %d bytes", remoteAddress, read));
@@ -66,7 +58,7 @@ public class MessageReader<C> {
 
             if ((buffer.position() - PREFIX_SIZE) < len) {
                 // Not enough data to decode, will need to loop again
-                return;
+                return Optional.empty();
             }
         }
 
@@ -79,25 +71,27 @@ public class MessageReader<C> {
 
                 Object raw = deserialized.getOrDefault("kind", null);
                 if (!(raw instanceof String)) {
-                    System.err.println("error: bad message format, expected 'key' to be 'String'");
-                    return;
+                    log("error: bad message format, expected 'key' to be 'String'");
+                    return Optional.empty();
                 }
 
                 String kind = (String) raw;
-                System.out.printf("debug: got '%s' message", kind);
+                log("debug: got '%s' message", kind);
 
                 Optional<Class<? extends Message>> decoder = registration.get(kind);
                 if (decoder.isEmpty()) {
-                    System.err.printf("error: unhandled message of kind '%s'%n", kind);
-                    return;
+                    log("error: unhandled message of kind '%s'%n", kind);
+                    return Optional.empty();
                 }
 
                 Message message = objectMapper.convertValue(deserialized, decoder.get());
-                handler.accept(new MessageContext(message, client), context);
+                return Optional.of(new MessageContext(message, client));
             } finally {
                 buffer.clear();
             }
         }
+
+        return Optional.empty();
     }
 
     private Map<String, Object> readMessage(ByteBuffer buffer) throws IOException {

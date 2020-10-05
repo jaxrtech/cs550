@@ -13,4 +13,9 @@ public enum MessageKind {
     public String getCode() {
         return code;
     }
+
+    @Override
+    public String toString() {
+        return getCode();
+    }
 }
