@@ -2,7 +2,9 @@ package com.jaxrtech.bolt;
 
 public enum MessageKind {
     REQUEST_LISTING("LIST"),
-    RESPOND_LISTING("FILES");
+    RESPOND_LISTING("FILES"),
+    REQUEST_DOWNLOAD("FETCH"),
+    STREAM_CHUNK("DATA");
 
     private final String code;
 

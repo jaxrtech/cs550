@@ -1,5 +1,7 @@
 package com.jaxrtech.bolt;
 
+import com.jaxrtech.bolt.messages.FileChunkResponse;
+import com.jaxrtech.bolt.messages.FileFetchRequest;
 import com.jaxrtech.bolt.messages.FileListingRequest;
 import com.jaxrtech.bolt.messages.FileListingResponse;
 
@@ -13,7 +15,9 @@ public class MessageRegistration {
     public static MessageRegistration defaultSet() {
         return new MessageRegistration()
                 .register(FileListingRequest.KIND, FileListingRequest.class)
-                .register(FileListingResponse.KIND, FileListingResponse.class);
+                .register(FileListingResponse.KIND, FileListingResponse.class)
+                .register(FileFetchRequest.KIND, FileFetchRequest.class)
+                .register(FileChunkResponse.KIND, FileChunkResponse.class);
     }
 
     public <T extends Message> MessageRegistration register(MessageKind kind, Class<T> clazz) {

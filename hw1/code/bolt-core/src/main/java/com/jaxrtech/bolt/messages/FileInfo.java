@@ -9,13 +9,13 @@ public class FileInfo {
 
     @JsonCreator(mode = JsonCreator.Mode.PROPERTIES)
     public FileInfo(
-            @JsonProperty("name") String name,
+            @JsonProperty("path") String path,
             @JsonProperty("size") long size) {
-        this.name = name;
+        this.name = path;
         this.size = size;
     }
 
-    public String getName() {
+    public String getPath() {
         return name;
     }
 

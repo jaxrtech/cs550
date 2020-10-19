@@ -13,22 +13,23 @@ import com.jaxrtech.bolt.MessageContext;
 import com.jaxrtech.bolt.MessageReader;
 import com.jaxrtech.bolt.MessageRegistration;
 import com.jaxrtech.bolt.MessageWriter;
-import com.jaxrtech.bolt.messages.FileInfo;
-import com.jaxrtech.bolt.messages.FileListingRequest;
-import com.jaxrtech.bolt.messages.FileListingResponse;
+import com.jaxrtech.bolt.messages.*;
 import org.msgpack.jackson.dataformat.MessagePackFactory;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.function.Consumer;
 
 class Client {
 
@@ -55,16 +56,15 @@ class Client {
         socket.finishConnect();
     }
 
-    public void write(Message message) throws IOException {
+    public void send(Message message) throws IOException {
         ByteBuffer buffer = bufferContext.getReadBuffer();
+        buffer.clear();
         writer.writeTo(message, buffer);
         buffer.flip();
 
         do {
             socket.write(buffer);
         } while (buffer.remaining() > 0);
-
-        buffer.clear();
     }
 
     public void configureNonBlocking() throws IOException {
@@ -107,6 +107,7 @@ class MyWindow extends BasicWindow {
     private final Panel panel;
     private final Label status;
     private final Table<String> fileTable;
+    private final List<FileInfo> files = new ArrayList<>();
 
     public MyWindow() {
         super("BOLT");
@@ -130,49 +131,138 @@ class MyWindow extends BasicWindow {
     }
 
     public void setFiles(List<FileInfo> files) {
+        this.files.clear();
+        this.files.addAll(files);
+
         fileTable.getTableModel().clear();
         files.forEach(f -> {
-            fileTable.getTableModel().addRow(f.getName(), Long.toString(f.getSize()));
+            fileTable.getTableModel().addRow(f.getPath(), Long.toString(f.getSize()));
         });
+    }
+
+    public void setFileSelectionListener(Consumer<FileInfo> handler) {
+        fileTable.setSelectAction(() -> {
+            int index = fileTable.getSelectedRow();
+            var file = files.get(index);
+            handler.accept(file);
+        });
+    }
+}
+
+interface Action { }
+
+class DownloadFileAction implements Action {
+    private final FileInfo file;
+
+    public DownloadFileAction(FileInfo file) {
+        this.file = file;
+    }
+
+    public FileInfo getFile() {
+        return file;
     }
 }
 
 class Main {
 
     private final static BlockingQueue<Message> guiQueue = new LinkedBlockingQueue<>();
+    private final static BlockingQueue<Action> actionQueue = new LinkedBlockingQueue<>();
+    private static Client client = new Client();
+
+    private final static Map<String, BlockingQueue<FileChunkResponse>> downloadQueues = new HashMap<>();
 
     public static void main(String[] args) throws Exception {
 
+        ThreadPoolExecutor downloadExecutor = (ThreadPoolExecutor) Executors.newCachedThreadPool();
+
         Thread tuiThread = new Thread(() -> {
             try {
-                run();
+                runGui();
             } catch (Exception e) {
                 e.printStackTrace();
             }
         });
-        tuiThread.start();
 
-        var client = new Client();
+        Thread writeThread = new Thread(() -> {
+            try {
+                runActions();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
+
+        tuiThread.start();
+        writeThread.start();
+
         client.connect(new InetSocketAddress("localhost", 9000));
-        client.write(new FileListingRequest());
+        client.send(new FileListingRequest());
         client.configureNonBlocking();
 
         while (true) {
             MessageContext envelope = client.readUntilNext();
-
             Message message = envelope.getMessage();
-            if (message.getKind().equals("FILES")) {
+            if (message instanceof FileListingResponse) {
                 guiQueue.offer(message);
             }
+            else if (message instanceof FileChunkResponse) {
+                FileChunkResponse actualMessage = (FileChunkResponse) message;
+                String key = actualMessage.getPath();
 
-            // TODO: Ask user to pick files to download
-            break;
+                boolean isFresh = downloadQueues.putIfAbsent(key, new LinkedBlockingQueue<>()) == null;
+                var queue = downloadQueues.get(key);
+                queue.offer(actualMessage);
+                if (isFresh) {
+                    startDownload(downloadExecutor, queue);
+                }
+            }
         }
-
-        tuiThread.join();
     }
 
-    private static void run() throws IOException, InterruptedException {
+    private static void startDownload(ThreadPoolExecutor downloadExecutor, BlockingQueue<FileChunkResponse> queue) {
+        downloadExecutor.submit(() -> {
+            try {
+                handleDownload(queue);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    private static void handleDownload(BlockingQueue<FileChunkResponse> queue) throws InterruptedException, IOException {
+        FileChunkResponse chunk = queue.take();
+        Path relativePath = Path.of(chunk.getPath());
+        Path destinationPath = Path.of(".", "downloads", relativePath.toString());
+        var ignored = destinationPath.getParent().toFile().mkdirs();
+
+        System.err.printf("info: [START] downloading '%s' (%s bytes)...%n", chunk.getPath(), chunk.getSize());
+        try (var downloadFile = new RandomAccessFile(destinationPath.toFile(), "r")) {
+            try (var outputChannel = downloadFile.getChannel()) {
+                boolean isDone;
+                do {
+                    System.err.printf("info: '%s': got %s bytes%n", chunk.getPath(), chunk.getBuffer().limit());
+                    outputChannel.write(chunk.getBuffer());
+                    isDone = chunk.getOffset() + chunk.getBuffer().limit() < chunk.getSize();
+                    if (!isDone) {
+                        chunk = queue.take();
+                    }
+                } while (!isDone);
+            }
+        }
+
+        System.err.printf("info: [DONE] downloading '%s' (%s bytes)...%n", chunk.getPath(), chunk.getSize());
+    }
+
+    private static void runActions() throws InterruptedException, IOException {
+        while (true) {
+            Action action = actionQueue.take();
+            if (action instanceof DownloadFileAction) {
+                DownloadFileAction actualAction = (DownloadFileAction) action;
+                client.send(new FileFetchRequest(actualAction.getFile().getPath()));
+            }
+        }
+    }
+
+    private static void runGui() throws IOException, InterruptedException {
         Terminal term = new DefaultTerminalFactory().createTerminal();
         Screen screen = new TerminalScreen(term);
         var gui = new MultiWindowTextGUI(screen);
@@ -185,6 +275,10 @@ class Main {
         window.setStatusText("Connecting...");
         String spinny = "◢◣◤◥";
         int i = 0;
+
+        window.setFileSelectionListener(f -> {
+            actionQueue.offer(new DownloadFileAction(f));
+        });
 
         while (true) {
             gui.getGUIThread().invokeAndWait(() -> {
@@ -205,7 +299,6 @@ class Main {
             }
 
             window.setStatusText(" " + spinny.charAt(i) + " Ready");
-
             i = (i+1) % spinny.length();
 
             Thread.sleep(30L);
