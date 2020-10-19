@@ -1,0 +1,2 @@
+[workspace]
+members = ["bolt", "bolt-node", "bolt-dht"]
