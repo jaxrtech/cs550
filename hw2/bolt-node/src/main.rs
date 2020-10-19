@@ -9,22 +9,21 @@ use std::thread;
 use std::net::SocketAddr;
 use std::error::Error;
 use std::convert::TryInto;
+use std::future::Future;
 
-use snafu::{ensure, Backtrace, ErrorCompat, ResultExt, Snafu, OptionExt};
+use futures::executor::block_on;
 use bytes::BytesMut;
-
+use snafu::{ensure, Backtrace, ErrorCompat, ResultExt, Snafu, OptionExt, IntoError, AsErrorSource};
 use tokio::prelude::*;
+use tokio::runtime::Handle;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::AsyncReadExt;
 use tokio::io::BufReader;
-
 use rmps::{Deserializer, Serializer};
 use serde::{Deserialize, Serialize};
 
-use bolt::{MessageHeader, message_kind, FileListingRequest, ResponseBody, RequestBody};
-use futures::executor::block_on;
-use tokio::runtime::Handle;
-use std::future::Future;
+use bolt::{MessageHeader, message_kind, FileListingRequest, ResponseBody, RequestBody, MessageHeaderDecoded, MessageDecoder};
+use std::fmt::Debug;
 
 #[derive(PartialEq)]
 enum BufferState {
@@ -35,25 +34,9 @@ enum BufferState {
     Done,
 }
 
-#[derive(PartialEq)]
-struct BufferTarget {
-    header: MessageHeader,
-    header_len: u32,
-}
-
-impl BufferTarget {
-    fn data_len(&self) -> u32 {
-        self.header.length
-    }
-
-    fn buf_target(&self) -> u32 {
-        self.header_len + self.data_len()
-    }
-}
-
 struct BufferContext {
     buffer: BytesMut,
-    header_with_target: Option<BufferTarget>,
+    header_with_target: Option<MessageHeaderDecoded>,
 }
 
 impl BufferContext {
@@ -64,12 +47,17 @@ impl BufferContext {
         }
     }
 
+    fn reset(&mut self) {
+        self.header_with_target = None;
+        self.buffer.clear();
+    }
+
     fn header(&self) -> Option<&MessageHeader> {
         self.header_with_target.as_ref().map(|x| &x.header)
     }
 
     fn set_header_with_len(&mut self, header: MessageHeader, header_len: u32) {
-        self.header_with_target = Some(BufferTarget { header, header_len });
+        self.header_with_target = Some(MessageHeaderDecoded { header, header_len });
     }
     
     fn try_read_header(&mut self) -> Result<(), rmps::decode::Error> {
@@ -184,42 +172,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         tokio::spawn(async move {
             let mut ctx = BufferContext::new(8 * 1024);
-            let peer_addr = socket.peer_addr().map_or("(unknown)".into(), |addr| addr.to_string());
-
             loop {
-                let old_state = ctx.get_state();
+                ctx.reset();
+                let result = read_next::<RequestBody>(&mut socket, &mut ctx).await;
+                println!("got {:?}", result);
 
-                let n = match socket.read_buf(&mut ctx.buffer).await {
-                    // socket closed
-                    Ok(n) if n == 0 => {
-                        println!("[{}] peer disconnected", peer_addr);
-                        return;
-                    }
-                    Ok(n) => n,
-                    Err(e) => {
-                        eprintln!("[{}] error: failed to read from socket; err = {:?}", peer_addr, e);
-                        return;
-                    }
-                };
-
-                println!("[{}] read {} bytes", peer_addr, n);
-
-                if old_state == BufferState::Empty {
-                    ctx.try_read_header();
-                }
-
-                // Check if we have read the body at this point
-                let new_state = ctx.get_state();
-                if new_state == BufferState::Done {
-                    let target = ctx.header_with_target.as_ref().unwrap();
-                    let kind = &target.header.kind;
-                    println!("got data of {} bytes with message of kind {:?}", target.data_len(), kind);
-
-                    let message = RequestBody::read_from(ctx.buffer.clone(), &target.header, target.header_len);
-                    println!("{:?}", message);
+                if result.is_err() {
+                    break;
                 }
             }
         });
+    }
+}
+
+#[derive(Debug, Snafu)]
+enum MessageReadError<M: std::error::Error + 'static> {
+    #[snafu(display("Peer disconnected (gracefully): {:?}", peer_addr))]
+    PeerDisconnectedGracefully { peer_addr: Option<SocketAddr> },
+
+    #[snafu(display("Failed to read from socket: {}", source))]
+    SocketReadError { source: std::io::Error },
+
+    #[snafu(display("Message format error: {:?}", source))]
+    BadMessageFormat { source: M }
+}
+
+async fn read_next<R: MessageDecoder>(socket: &mut TcpStream, ctx: &mut BufferContext) -> Result<R::Message, MessageReadError<R::Error>> {
+    let peer_addr: Option<SocketAddr> = socket.peer_addr().map_or(None, Some);
+    let peer_addr_str = peer_addr.map_or("(unknown)".into(), |addr| addr.to_string());
+
+    loop {
+        let old_state = ctx.get_state();
+
+        let n = match socket.read_buf(&mut ctx.buffer).await {
+            // socket closed
+            Ok(n) if n == 0 => {
+                println!("[{}] peer disconnected", peer_addr_str);
+                (PeerDisconnectedGracefully { peer_addr }).fail()
+            }
+            Ok(n) => Ok(n),
+            Err(e) => {
+                let context = SocketReadError;
+                Err(context.into_error(e))
+            }
+        }?;
+
+        println!("[{}] read {} bytes", peer_addr_str, n);
+
+        if old_state == BufferState::Empty {
+            ctx.try_read_header();
+        }
+
+        // Check if we have read the body at this point
+        let new_state = ctx.get_state();
+        if new_state == BufferState::Done {
+            let target = ctx.header_with_target.as_ref().unwrap();
+            let kind = &target.header.kind;
+            println!("got data of {} bytes with message of kind {:?}", target.data_len(), kind);
+
+            let message = R::read_from(ctx.buffer.clone(), &target)
+                .context(BadMessageFormat)?;
+            return Ok(message);
+        }
     }
 }
 
