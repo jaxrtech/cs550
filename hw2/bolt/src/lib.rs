@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use rmps::{Deserializer, Serializer};
 
 pub mod message_kind {
-    const REQUEST_LISTING: &str = "LIST";
-    const RESPONSE_LISTING: &str = "FILES";
-    const REQUEST_FETCH: &str = "FETCH";
-    const STREAM_CHUNK: &str = "DATA";
+    pub const REQUEST_LISTING: &str = "LIST";
+    pub const RESPONSE_LISTING: &str = "FILES";
+    pub const REQUEST_FETCH: &str = "FETCH";
+    pub const STREAM_CHUNK: &str = "DATA";
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -38,8 +38,14 @@ pub struct FileChunkResponse {
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
-struct FileListingRequest {
-    dummy: i32
+pub struct FileListingRequest {
+    dummy: ()
+}
+
+impl FileListingRequest {
+    pub fn new() -> FileListingRequest {
+        FileListingRequest { dummy: () }
+    }
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -64,7 +70,7 @@ mod tests {
 
         expected.serialize(&mut Serializer::new(&mut buf)).unwrap();
 
-        let mut reader = Cursor::new(buf);
+        let reader = Cursor::new(buf);
         let actual = rmps::from_read::<_, FileInfo>(reader).unwrap();
         assert_eq!(expected, actual);
     }

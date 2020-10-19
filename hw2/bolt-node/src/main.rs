@@ -1,18 +1,30 @@
+extern crate serde;
+extern crate futures;
 extern crate rmp_serde as rmps;
 
 use std::io;
 use std::io::prelude::*;
-use std::io::Cursor;
+use std::io::{Cursor, ErrorKind};
+use std::thread;
+use std::net::SocketAddr;
+use std::error::Error;
+use std::convert::TryInto;
 
-use tokio::prelude::*;
-use tokio::net::TcpListener;
-use tokio::io::AsyncReadExt;
-use tokio::io::BufReader;
-use rmps::{Deserializer, Serializer};
+use snafu::{ensure, Backtrace, ErrorCompat, ResultExt, Snafu, OptionExt};
 use bytes::BytesMut;
 
-use bolt::MessageHeader;
-use std::thread;
+use tokio::prelude::*;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io::AsyncReadExt;
+use tokio::io::BufReader;
+
+use rmps::{Deserializer, Serializer};
+use serde::{Deserialize, Serialize};
+
+use bolt::{MessageHeader, message_kind, FileListingRequest};
+use futures::executor::block_on;
+use tokio::runtime::Handle;
+use std::future::Future;
 
 #[derive(PartialEq)]
 enum BufferState {
@@ -71,9 +83,7 @@ impl BufferContext {
                 self.set_header_with_len(header, header_len);
                 Ok(())
             }
-            Err(err) => {
-                Err(err)
-            }
+            Err(e) => Err(e)
         };
 
         result
@@ -102,6 +112,50 @@ impl BufferContext {
     }
 }
 
+#[derive(Debug, Snafu)]
+enum CommandError {
+    #[snafu(display("Bad argument to command: {}", reason))]
+    BadArgument { reason: String },
+
+    #[snafu(display("Failed to parse address: {}", source))]
+    BadAddressFormat { source: std::net::AddrParseError },
+
+    #[snafu(display("Failed to connect to remote host: {}", source))]
+    ConnectionError { source: std::io::Error },
+
+    #[snafu(display("Failed to send message to remote host: {}", source))]
+    SendError { source: std::io::Error },
+
+    #[snafu(display("Failed to encode message: {}", source))]
+    MessageEncodingError { source: rmps::encode::Error }
+}
+
+async fn cmd_list(args: Vec<&str>) -> Result<(), CommandError> {
+    let address = args.get(0)
+        .context(BadArgument { reason: "Expected address with port".to_string() })
+        .and_then(|s| s.parse::<SocketAddr>().context(BadAddressFormat))?;
+
+    let mut client = TcpStream::connect(address).await
+        .context(ConnectionError)?;
+
+    let message = FileListingRequest::new();
+    let mut message_buf = Vec::new();
+    message.serialize(&mut Serializer::new(&mut message_buf))
+        .context(MessageEncodingError)?;
+
+    let header = MessageHeader {
+        kind: message_kind::REQUEST_LISTING.into(),
+        length: message_buf.len() as u32,
+    };
+    let mut header_buf = Vec::new();
+    header.serialize(&mut Serializer::new(&mut header_buf))
+        .context(MessageEncodingError)?;
+
+    client.write_all(&header_buf).await.context(SendError)?;
+    client.write_all(&message_buf).await.context(SendError)?;
+
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -109,13 +163,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut listener = TcpListener::bind(listen_address).await?;
     println!("listening on {}", listen_address);
 
-    thread::spawn(|| {
+    let handle = Handle::current();
+    thread::spawn(move || {
         print!("> ");
         io::stdout().flush().unwrap();
 
         let stdin = io::stdin();
-        for line in stdin.lock().lines() {
-            println!("debug: got '{}'", line.unwrap());
+        for result in stdin.lock().lines() {
+            let line = result.unwrap();
+            if !line.is_empty() {
+                handle_cli_command(handle.clone(), line);
+            }
+
             print!("> ");
             io::stdout().flush().unwrap();
         }
@@ -159,4 +218,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
+}
+
+fn handle_cli_command(handle: Handle, line: String) {
+    block_on(handle.spawn(async move {
+        println!("debug: got '{}'", line);
+
+        let mut parts: Vec<&str> = line.split_whitespace().collect();
+        if let Some(command) = parts.get(0) {
+            match command.to_lowercase().as_str() {
+                "list" => {
+                    parts.remove(0);
+                    if let Err(e) = cmd_list(parts).await {
+                        println!("{}", e);
+                    }
+                }
+                _ => println!("unknown command {}", command)
+            }
+        }
+    }));
 }
