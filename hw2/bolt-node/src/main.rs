@@ -21,7 +21,7 @@ use tokio::io::BufReader;
 use rmps::{Deserializer, Serializer};
 use serde::{Deserialize, Serialize};
 
-use bolt::{MessageHeader, message_kind, FileListingRequest};
+use bolt::{MessageHeader, message_kind, FileListingRequest, ResponseBody, RequestBody};
 use futures::executor::block_on;
 use tokio::runtime::Handle;
 use std::future::Future;
@@ -89,9 +89,10 @@ impl BufferContext {
         result
     }
 
-    fn get_state(&self) -> (BufferState, u32) {
+    fn get_state(&self) -> BufferState {
         let pos = self.buffer.len() as u32;
-        let state = if pos == 0 {
+
+        if pos == 0 {
             BufferState::Empty
         }
         else { // pos > 0
@@ -106,9 +107,7 @@ impl BufferContext {
             else {
                 BufferState::WaitHeader
             }
-        };
-
-        (state, pos)
+        }
     }
 }
 
@@ -188,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let peer_addr = socket.peer_addr().map_or("(unknown)".into(), |addr| addr.to_string());
 
             loop {
-                let (old_state, old_pos) = ctx.get_state();
+                let old_state = ctx.get_state();
 
                 let n = match socket.read_buf(&mut ctx.buffer).await {
                     // socket closed
@@ -210,10 +209,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 // Check if we have read the body at this point
-                let (new_state, _) = ctx.get_state();
+                let new_state = ctx.get_state();
                 if new_state == BufferState::Done {
                     let target = ctx.header_with_target.as_ref().unwrap();
-                    println!("got data of {} bytes with message of kind {:?}", target.data_len(), target.header.kind)
+                    let kind = &target.header.kind;
+                    println!("got data of {} bytes with message of kind {:?}", target.data_len(), kind);
+
+                    let message = RequestBody::read_from(ctx.buffer.clone(), &target.header, target.header_len);
+                    println!("{:?}", message);
                 }
             }
         });
