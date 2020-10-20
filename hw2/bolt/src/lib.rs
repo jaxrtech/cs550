@@ -2,23 +2,26 @@ extern crate serde;
 extern crate rmp_serde as rmps;
 extern crate tokio_util;
 
-use std::collections::HashMap;
-use std::io::{Bytes, Cursor};
+use std::io::{Cursor};
 
 use serde::{Deserialize, Serialize};
-use bytes::{Buf, BytesMut};
-use bytes::buf::BufExt;
-use rmps::{Deserializer, Serializer};
+use bytes::{BytesMut};
+use rmps::{Serializer};
 use rmps::decode::Error;
 use tokio_util::codec::Decoder;
 use serde::export::PhantomData;
-use std::fmt::Debug;
+use tokio::prelude::io::AsyncWriteExt;
+use async_trait::async_trait;
 
 pub mod message_kind {
     pub const REQUEST_LISTING: &str = "LIST";
     pub const RESPONSE_LISTING: &str = "FILES";
     pub const REQUEST_FETCH: &str = "FETCH";
     pub const RESPONSE_CHUNK: &str = "DATA";
+}
+
+pub trait MessageKindTagged {
+    fn kind(&self) -> &'static str;
 }
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
@@ -29,8 +32,14 @@ pub struct MessageHeader {
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 pub struct FileInfo {
-    name: String,
-    size: u64,
+    pub name: String,
+    pub size: Option<u64>,
+}
+
+impl FileInfo {
+    pub fn new(name: String, size: Option<u64>) -> FileInfo {
+        FileInfo { name, size }
+    }
 }
 
 #[derive(Debug)]
@@ -63,6 +72,37 @@ impl MessageDecoder for RequestBody {
             }
             _ => Err(Error::OutOfRange),
         }
+    }
+}
+
+#[async_trait]
+pub trait MessageEncoder {
+    type Message: MessageKindTagged + Serialize;
+    async fn write_to<'a, S: AsyncWriteExt + Unpin + Send>(self, stream: S) -> Result<(), Box<dyn std::error::Error>>;
+}
+
+#[async_trait]
+impl<M> MessageEncoder for M
+    where M: MessageKindTagged + Serialize + Send + Sized
+{
+    type Message = M;
+    async fn write_to<'a, S>(self, mut stream: S) -> Result<(), Box<dyn std::error::Error>>
+        where S: AsyncWriteExt + Unpin + Send
+    {
+        let mut message_buf = Vec::new();
+        self.serialize(&mut Serializer::new(&mut message_buf))?;
+
+        let header = MessageHeader {
+            kind: self.kind().into(),
+            length: message_buf.len() as u32,
+        };
+        let mut header_buf = Vec::new();
+        header.serialize(&mut Serializer::new(&mut header_buf))?;
+
+        stream.write_all(&header_buf).await?;
+        stream.write_all(&message_buf).await?;
+
+        Ok(())
     }
 }
 
@@ -112,6 +152,38 @@ pub enum ResponseBody {
     Listing(FileListingResponse)
 }
 
+impl From<FileChunkResponse> for ResponseBody {
+    fn from(x: FileChunkResponse) -> Self {
+        ResponseBody::Chunk(x)
+    }
+}
+
+impl From<FileListingResponse> for ResponseBody {
+    fn from(x: FileListingResponse) -> Self {
+        ResponseBody::Listing(x)
+    }
+}
+
+impl serde::Serialize for ResponseBody {
+    fn serialize<S>(&self, serializer: S) -> Result<<S as serde::Serializer>::Ok, <S as serde::Serializer>::Error>
+        where S: serde::Serializer
+    {
+        match self {
+            ResponseBody::Chunk(x) => x.serialize(serializer),
+            ResponseBody::Listing(x) => x.serialize(serializer),
+        }
+    }
+}
+
+impl MessageKindTagged for ResponseBody {
+    fn kind(&self) -> &'static str {
+        match self {
+            ResponseBody::Chunk(x) => x.kind(),
+            ResponseBody::Listing(x) => x.kind(),
+        }
+    }
+}
+
 impl MessageDecoder for ResponseBody {
     type Message = Self;
     type Error = rmps::decode::Error;
@@ -138,6 +210,10 @@ pub struct FileFetchRequest {
     name: String,
 }
 
+impl MessageKindTagged for FileFetchRequest {
+    fn kind(&self) -> &'static str { message_kind::REQUEST_FETCH }
+}
+
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 pub struct FileChunkResponse {
     path: String,
@@ -146,9 +222,17 @@ pub struct FileChunkResponse {
     buffer: Vec<u8>
 }
 
+impl MessageKindTagged for FileChunkResponse {
+    fn kind(&self) -> &'static str { message_kind::RESPONSE_CHUNK }
+}
+
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 pub struct FileListingRequest {
     dummy: ()
+}
+
+impl MessageKindTagged for FileListingRequest {
+    fn kind(&self) -> &'static str { message_kind::REQUEST_LISTING }
 }
 
 impl FileListingRequest {
@@ -159,14 +243,20 @@ impl FileListingRequest {
 
 #[derive(Debug, PartialEq, Deserialize, Serialize)]
 pub struct FileListingResponse {
-    files: Vec<FileInfo>,
+    pub files: Vec<FileInfo>,
+}
+
+impl MessageKindTagged for FileListingResponse {
+    fn kind(&self) -> &'static str {
+        message_kind::RESPONSE_LISTING
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{FileInfo, MessageHeader, message_kind};
-    use rmps::{Deserializer, Serializer};
-    use serde::{Deserialize, Serialize};
+    use crate::FileInfo;
+    use rmps::Serializer;
+    use serde::Serialize;
     use std::io::Cursor;
 
     #[test]
@@ -174,7 +264,7 @@ mod tests {
         let mut message_buf = Vec::new();
         let expected = FileInfo {
             name: "/foo.txt".into(),
-            size: 42,
+            size: Some(42),
         };
 
         expected.serialize(&mut Serializer::new(&mut message_buf)).unwrap();

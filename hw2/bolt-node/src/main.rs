@@ -7,29 +7,26 @@ use std::io::prelude::*;
 use std::io::{Cursor, ErrorKind};
 use std::thread;
 use std::net::SocketAddr;
-use std::error::Error;
-use std::convert::TryInto;
-use std::future::Future;
+use std::fmt::Debug;
+use std::path::Path;
 
 use futures::executor::block_on;
 use bytes::BytesMut;
-use snafu::{ensure, Backtrace, ErrorCompat, ResultExt, Snafu, OptionExt, IntoError, AsErrorSource};
+use walkdir::{WalkDir, DirEntry};
+use snafu::{ResultExt, Snafu, OptionExt, IntoError};
+
+use tokio::io::AsyncReadExt;
+use tokio::{task};
 use tokio::prelude::*;
 use tokio::runtime::Handle;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::io::AsyncReadExt;
-use tokio::io::BufReader;
-use rmps::{Deserializer, Serializer};
-use serde::{Deserialize, Serialize};
 
-use bolt::{MessageHeader, message_kind, FileListingRequest, ResponseBody, RequestBody, MessageHeaderDecoded, MessageDecoder};
-use std::fmt::Debug;
+use bolt::{MessageHeader, FileListingRequest, ResponseBody, RequestBody, MessageHeaderDecoded, MessageDecoder, FileInfo, FileListingResponse, MessageEncoder};
 
 #[derive(PartialEq)]
 enum BufferState {
     Empty,
     WaitHeader,
-    GotHeader,
     WaitData,
     Done,
 }
@@ -114,7 +111,7 @@ enum CommandError {
     SendError { source: std::io::Error },
 
     #[snafu(display("Failed to encode message: {}", source))]
-    MessageEncodingError { source: rmps::encode::Error }
+    MessageEncodingError { source: Box<dyn std::error::Error> }
 }
 
 async fn cmd_list(args: Vec<&str>) -> Result<(), CommandError> {
@@ -126,20 +123,8 @@ async fn cmd_list(args: Vec<&str>) -> Result<(), CommandError> {
         .context(ConnectionError)?;
 
     let message = FileListingRequest::new();
-    let mut message_buf = Vec::new();
-    message.serialize(&mut Serializer::new(&mut message_buf))
-        .context(MessageEncodingError)?;
-
-    let header = MessageHeader {
-        kind: message_kind::REQUEST_LISTING.into(),
-        length: message_buf.len() as u32,
-    };
-    let mut header_buf = Vec::new();
-    header.serialize(&mut Serializer::new(&mut header_buf))
-        .context(MessageEncodingError)?;
-
-    client.write_all(&header_buf).await.context(SendError)?;
-    client.write_all(&message_buf).await.context(SendError)?;
+    message.write_to(&mut client).await
+        .context(MessageEncodingError);
 
     Ok(())
 }
@@ -177,11 +162,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let result = read_next::<RequestBody>(&mut socket, &mut ctx).await;
                 println!("got {:?}", result);
 
-                if result.is_err() {
+                if let Ok(req) = result {
+                    let result = task::spawn_blocking(|| {
+                        handle_request( req, Box::from(Path::new("."))).ok()
+                    }).await;
+
+                    println!("handler -> {:?}", result);
+                    if let Ok(Some(response)) = result {
+                        response.write_to(&mut socket);
+                    }
+                }
+                else {
                     break;
                 }
             }
         });
+    }
+}
+
+fn handle_request<'a>(req: RequestBody, dir: Box<Path>) -> Result<ResponseBody, Box<dyn std::error::Error>> {
+    match req {
+        RequestBody::Listing(_) => {
+            let entires: Vec<FileInfo> = WalkDir::new(dir).into_iter()
+                .take(100)
+                .filter_map(Result::ok)
+                .map(|x: DirEntry| {
+                    let name = x.path().to_string_lossy().to_string();
+                    let size = x.metadata().map(|f| f.len()).ok();
+                    FileInfo::new(name, size)
+                })
+                .collect();
+
+            Ok(FileListingResponse { files: entires }.into())
+        },
+        _ => {
+            Err(io::Error::new(ErrorKind::Other, "Unsupported request").into())
+        }
     }
 }
 
