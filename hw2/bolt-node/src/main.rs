@@ -22,6 +22,7 @@ use tokio::runtime::Handle;
 use tokio::net::{TcpListener, TcpStream};
 
 use bolt::{MessageHeader, FileListingRequest, ResponseBody, RequestBody, MessageHeaderDecoded, MessageDecoder, FileInfo, FileListingResponse, MessageEncoder};
+use tokio::sync::watch;
 
 #[derive(PartialEq)]
 enum BufferState {
@@ -114,7 +115,7 @@ enum CommandError {
     MessageEncodingError { source: Box<dyn std::error::Error> }
 }
 
-async fn cmd_list(args: Vec<&str>) -> Result<(), CommandError> {
+async fn cmd_list(ctx: &mut BufferContext, args: Vec<&str>) -> Result<(), CommandError> {
     let address = args.get(0)
         .context(BadArgument { reason: "Expected address with port".to_string() })
         .and_then(|s| s.parse::<SocketAddr>().context(BadAddressFormat))?;
@@ -135,6 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut listener = TcpListener::bind(listen_address).await?;
     println!("listening on {}", listen_address);
 
+    let (tx, mut rx) = watch::channel("".to_string());
     let handle = Handle::current();
     thread::spawn(move || {
         print!("> ");
@@ -144,11 +146,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for result in stdin.lock().lines() {
             let line = result.unwrap();
             if !line.is_empty() {
-                handle_cli_command(handle.clone(), line);
+                tx.broadcast(line);
             }
 
             print!("> ");
             io::stdout().flush().unwrap();
+        }
+    });
+
+    tokio::spawn(async move {
+        let mut ctx = BufferContext::new(32 * 1024);
+        while let Some(line) = rx.recv().await {
+            if line.is_empty() { continue; }
+            handle_cli_command(&mut ctx, handle.clone(), line).await;
         }
     });
 
@@ -253,21 +263,20 @@ async fn read_next<R: MessageDecoder>(socket: &mut TcpStream, ctx: &mut BufferCo
     }
 }
 
-fn handle_cli_command(handle: Handle, line: String) {
-    block_on(handle.spawn(async move {
-        println!("debug: got '{}'", line);
+async fn handle_cli_command(ctx: &mut BufferContext, handle: Handle, line: String) {
+    println!("debug: got '{}'", line);
 
-        let mut parts: Vec<&str> = line.split_whitespace().collect();
-        if let Some(command) = parts.get(0) {
-            match command.to_lowercase().as_str() {
-                "list" => {
-                    parts.remove(0);
-                    if let Err(e) = cmd_list(parts).await {
-                        println!("{}", e);
-                    }
+    let mut parts: Vec<&str> = line.split_whitespace().collect();
+    if let Some(command) = parts.get(0) {
+        match command.to_lowercase().as_str() {
+            "list" => {
+                parts.remove(0);
+                let result = cmd_list(ctx, parts).await;
+                if let Err(e) = result {
+                    println!("{}", e);
                 }
-                _ => println!("unknown command {}", command)
             }
+            _ => println!("unknown command {}", command)
         }
-    }));
+    }
 }
