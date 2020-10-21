@@ -196,7 +196,7 @@ impl MessageDecoder for ResponseBody {
                 let x = rmps::from_read::<_, FileChunkResponse>(reader)?;
                 Ok(ResponseBody::Chunk(x))
             },
-            message_kind::REQUEST_LISTING => {
+            message_kind::RESPONSE_LISTING => {
                 let x = rmps::from_read::<_, FileListingResponse>(reader)?;
                 Ok(ResponseBody::Listing(x))
             }

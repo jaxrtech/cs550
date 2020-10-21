@@ -23,8 +23,9 @@ use tokio::net::{TcpListener, TcpStream};
 
 use bolt::{MessageHeader, FileListingRequest, ResponseBody, RequestBody, MessageHeaderDecoded, MessageDecoder, FileInfo, FileListingResponse, MessageEncoder};
 use tokio::sync::watch;
+use bolt::RequestBody::Listing;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 enum BufferState {
     Empty,
     WaitHeader,
@@ -111,8 +112,14 @@ enum CommandError {
     #[snafu(display("Failed to send message to remote host: {}", source))]
     SendError { source: std::io::Error },
 
+    #[snafu(display("Failed to receive message to remote host: {}", source))]
+    ReceiveError { source: MessageReadError<rmps::decode::Error> },
+
     #[snafu(display("Failed to encode message: {}", source))]
-    MessageEncodingError { source: Box<dyn std::error::Error> }
+    MessageEncodingError { source: Box<dyn std::error::Error> },
+
+    #[snafu(display("Response was invalid or unexpected: {}", reason))]
+    BadResponseError { reason: String },
 }
 
 async fn cmd_list(ctx: &mut BufferContext, args: Vec<&str>) -> Result<(), CommandError> {
@@ -123,9 +130,31 @@ async fn cmd_list(ctx: &mut BufferContext, args: Vec<&str>) -> Result<(), Comman
     let mut client = TcpStream::connect(address).await
         .context(ConnectionError)?;
 
-    let message = FileListingRequest::new();
-    message.write_to(&mut client).await
-        .context(MessageEncodingError);
+    let req = FileListingRequest::new();
+    req.write_to(&mut client).await
+        .context(MessageEncodingError)?;
+    println!("[client] sent request");
+
+    println!("[client] waiting on response...");
+    let resp_any = read_next::<ResponseBody>(&mut client, ctx).await
+        .context(ReceiveError)?;
+
+    println!("client got {:?}", resp_any);
+    if let ResponseBody::Listing(resp) = resp_any {
+        if resp.files.is_empty() {
+            println!("(no files available)");
+        }
+        else {
+            let width = resp.files.iter().map(|f| f.name.len()).max().unwrap_or_default();
+            for f in resp.files.iter() {
+                let formatted_size = f.size.map_or("(unknown size)".into(), |n| format!("{} bytes", n));
+                println!("{:width$} | {}", f.name, formatted_size, width = width)
+            }
+        }
+    } else {
+        let err = BadResponseError { reason: format!("Expected 'FileListingResponse' but got '{:?}'", resp_any) };
+        return err.fail().map_err(|x| x.into())
+    }
 
     Ok(())
 }
@@ -158,7 +187,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut ctx = BufferContext::new(32 * 1024);
         while let Some(line) = rx.recv().await {
             if line.is_empty() { continue; }
-            handle_cli_command(&mut ctx, handle.clone(), line).await;
+            ctx.reset();
+            handle_cli_command(&mut ctx, handle.clone(), line.clone()).await;
+            println!("handled '{}'", line);
         }
     });
 
@@ -170,19 +201,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loop {
                 ctx.reset();
                 let result = read_next::<RequestBody>(&mut socket, &mut ctx).await;
-                println!("got {:?}", result);
+                println!("[server] received from client {:?}", result);
 
                 if let Ok(req) = result {
                     let result = task::spawn_blocking(|| {
                         handle_request( req, Box::from(Path::new("."))).ok()
                     }).await;
 
-                    println!("handler -> {:?}", result);
+                    println!("[server] handler -> {:?}", result);
                     if let Ok(Some(response)) = result {
-                        response.write_to(&mut socket);
+                        let send_result = response.write_to(&mut socket).await;
+                        println!("[server] sent response! {:?}", send_result);
+                    } else {
+                        eprintln!("[server] bad message from response handler: {:?}", result);
                     }
                 }
                 else {
+                    println!("[server] shutdown client handler");
                     break;
                 }
             }
@@ -195,6 +230,7 @@ fn handle_request<'a>(req: RequestBody, dir: Box<Path>) -> Result<ResponseBody, 
         RequestBody::Listing(_) => {
             let entires: Vec<FileInfo> = WalkDir::new(dir).into_iter()
                 .take(100)
+                .filter(|f: DirEntry| f.metadata().map_or(false, |meta| meta.is_file()))
                 .filter_map(Result::ok)
                 .map(|x: DirEntry| {
                     let name = x.path().to_string_lossy().to_string();
@@ -230,6 +266,7 @@ async fn read_next<R: MessageDecoder>(socket: &mut TcpStream, ctx: &mut BufferCo
     loop {
         let old_state = ctx.get_state();
 
+        println!("[{}] (state = {:?}) waiting for read...", peer_addr_str, old_state);
         let n = match socket.read_buf(&mut ctx.buffer).await {
             // socket closed
             Ok(n) if n == 0 => {
