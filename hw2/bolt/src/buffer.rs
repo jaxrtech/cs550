@@ -47,7 +47,7 @@ impl BufferContext {
         let result = match parse_result {
             Ok(header) => {
                 let header_len = cursor.position() as u32;
-                println!("[read] header len = {} bytes | {:?}", header_len, header);
+                // println!("[read] header len = {} bytes | {:?}", header_len, header);
                 self.set_header_with_len(header, header_len);
                 self.buffer.split_to(header_len as usize);
                 Ok(())
@@ -68,7 +68,7 @@ impl BufferContext {
             (_, Some(_)) => BufferState::WaitData,
         };
 
-        println!("[buf] state = {:?} | len = {} | cap = {}", state, self.buffer.len(), self.buffer.capacity());
+        // println!("[buf] state = {:?} | len = {} | cap = {}", state, self.buffer.len(), self.buffer.capacity());
         state
     }
 }

@@ -115,7 +115,7 @@ impl MessageDecoder for ResponseBody {
 
         if let Ok(_) = result {
             let len = reader.borrow().position() as usize;
-            println!("[read] chop {} bytes", len);
+            // println!("[read] chop {} bytes", len);
             buf.split_to(len);
         }
 
@@ -211,7 +211,7 @@ pub async fn read_next<R: MessageDecoder, S: AsyncReadExt + Unpin>(
     loop {
         let mut cur_state = ctx.get_state();
         if cur_state != BufferState::Done {
-            println!("[{}] (state = {:?}) waiting for read...", peer_addr_str, cur_state);
+            // println!("[{}] (state = {:?}) waiting for read...", peer_addr_str, cur_state);
             let n = match socket.read_buf(&mut ctx.buffer).await {
                 // socket closed
                 Ok(n) if n == 0 => {
@@ -225,11 +225,11 @@ pub async fn read_next<R: MessageDecoder, S: AsyncReadExt + Unpin>(
                 }
             }?;
 
-            println!("[{}] read {} bytes (len = {}, cap = {})", peer_addr_str, n, ctx.buffer.len(), ctx.buffer.capacity());
+            // println!("[{}] read {} bytes (len = {}, cap = {})", peer_addr_str, n, ctx.buffer.len(), ctx.buffer.capacity());
 
             if cur_state == BufferState::Empty || cur_state == BufferState::WaitHeader {
                 let header_result = ctx.try_read_header();
-                println!("[read] header result = {:?}", header_result)
+                // println!("[read] header result = {:?}", header_result)
             }
 
             cur_state = ctx.get_state();
@@ -239,7 +239,7 @@ pub async fn read_next<R: MessageDecoder, S: AsyncReadExt + Unpin>(
         if cur_state == BufferState::Done {
             let target = ctx.header_with_target.as_ref().unwrap();
             let kind = &target.header.kind;
-            println!("[read] got data of {} bytes with message of kind {:?}", target.data_len(), kind);
+            // println!("[read] got data of {} bytes with message of kind {:?}", target.data_len(), kind);
 
             let message = R::read_from(ctx.buffer.borrow_mut(), &target)
                 .context(BadMessageFormat)?;
@@ -248,7 +248,7 @@ pub async fn read_next<R: MessageDecoder, S: AsyncReadExt + Unpin>(
             ctx.header_with_target = None;
             if ctx.buffer.len() > 0 {
                 let header_result = ctx.try_read_header();
-                println!("[read] header result (post read) = {:?}", header_result)
+                // println!("[read] header result (post read) = {:?}", header_result)
             }
 
             // Grow the capacity back to the original buffer capacity

@@ -76,7 +76,12 @@ fn handle_fetch(fetch: messages::FileFetchRequest, socket_ref: Arc<Mutex<OwnedWr
         } else { raw_path };
         let absolute_path = root_directory.join(filename);
         println!("[server] fetch request for '{}'", &absolute_path.to_string_lossy());
-        let mut file = File::open(absolute_path.as_path()).await.unwrap();
+        let mut file = File::open(absolute_path.as_path()).await;
+        if let Err(e) = file {
+            eprintln!("[server] failed to open file '{}': {}", &absolute_path.to_string_lossy(), e);
+            return;
+        }
+        let mut file = file.unwrap();
 
         let total_size = file.metadata().await.unwrap().len();
         let mut buf = [0u8; 32 * 1024];

@@ -9,7 +9,7 @@ use std::{io, env};
 use std::io::prelude::*;
 use std::io::{Cursor, ErrorKind, BufReader};
 use std::thread;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4};
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -21,7 +21,7 @@ use std::ops::DerefMut;
 use tokio::prelude::*;
 use tokio::runtime::Handle;
 use tokio::task;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio::sync::{watch, Mutex};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -53,16 +53,36 @@ struct Opts {
     path: Option<PathBuf>,
 }
 
+async fn try_listen_on(host: &str, mut port: u16) -> tokio::io::Result<TcpListener> {
+    loop {
+        let mut listen_address: String = format!("{}:{}", host, port);
+        let mut listener = TcpListener::bind(&listen_address).await;
+        match &listener {
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                // Try again with any port
+                port = 0;
+                continue;
+            },
+            _ => {
+                return listener;
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts: Opts = Opts::parse();
     let cwdir = env::current_dir().unwrap();
-    let listen_port = opts.port;
+    let listen_port_preferred = opts.port;
     let root_directory = opts.path.unwrap_or(cwdir.clone());
     println!("root = '{}'", &root_directory.to_string_lossy());
 
-    let listen_address: String = format!("127.0.0.1:{}", listen_port);
-    let mut listener = TcpListener::bind(&listen_address).await?;
+    let mut listener = try_listen_on("127.0.0.1", listen_port_preferred).await?;
+    let listen_address = listener.local_addr().unwrap();
+    if listen_address.port() != listen_port_preferred {
+        eprintln!("warn: Unable to listen on specified port {} since its already in use. Using port {} instead.", listen_port_preferred, listen_address.port())
+    }
     println!("listening on {}", &listen_address);
 
     let (tx, mut rx) = watch::channel("".to_string());

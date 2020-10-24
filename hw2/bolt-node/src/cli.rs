@@ -53,7 +53,7 @@ enum CommandError {
     DownloadIoError { source: std::io::Error },
 }
 
-async fn cmd_fetch(args: Vec<&str>) -> Result<(), CommandError> {
+async fn cmd_fetch(args: Vec<String>) -> Result<(), CommandError> {
     let url = args.get(0)
         .context(BadArgument { reason: "Expected URL to file to download".to_string() })
         .and_then(|s| Url::parse(s).context(BadUrlFormat))?;
@@ -93,12 +93,12 @@ async fn cmd_fetch(args: Vec<&str>) -> Result<(), CommandError> {
             }
 
             let buffer = resp.buffer;
-            println!("[client] got {} bytes", buffer.len());
+            // println!("[client] got {} bytes", buffer.len());
             output_file.write_all(buffer.as_slice()).await
                 .context(DownloadIoError)?;
 
             pos += buffer.len() as u64;
-            println!("[client] fetching '{}' ({}/{} bytes)", filename.to_string_lossy(), pos, size.unwrap());
+            // println!("[client] fetching '{}' ({}/{} bytes)", filename.to_string_lossy(), pos, size.unwrap());
         } else {
             let err = BadResponseError { reason: format!("Expected 'FileChunkResponse' but got '{:?}'", resp_any) };
             return err.fail().map_err(|x| x.into())
@@ -162,7 +162,9 @@ pub async fn handle_cli_command(line: String) {
             },
             "fetch" => {
                 parts.remove(0);
-                Some(cmd_fetch(parts).await)
+                let parts: Vec<String> = parts.iter().map(|x| x.clone().to_string()).collect();
+                tokio::spawn(async move { cmd_fetch(parts).await; });
+                Some(Ok(()))
             }
             _ => {
                 println!("unknown command {}", command);
