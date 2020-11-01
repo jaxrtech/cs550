@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::net::SocketAddr;
 use std::marker::PhantomData;
 
-use snafu::{ResultExt, Snafu, OptionExt, IntoError, ensure};
+use snafu::{ResultExt, Snafu, OptionExt, IntoError, ensure, AsErrorSource};
 use async_trait::async_trait;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio_util::codec::Decoder;
@@ -10,10 +10,12 @@ use bytes::BytesMut;
 use rmps::{Serializer};
 use serde::{Deserialize, Serialize};
 
-use crate::messages::{RequestBody, ResponseBody, FileChunkResponse, FileListingResponse, MessageKindTagged, FileFetchRequest, FileListingRequest};
+use crate::messages::{RequestBody, ResponseBody, FileChunkResponse, FileListingResponse, MessageKindTagged, FileFetchRequest, FileListingRequest, MessageFromRead, DhtAddNodeResponse, DhtRemoveNodeResponse, DhtAddNodeRequest, DhtRemoveNodeRequest};
 use crate::buffer::{BufferContext, BufferState};
 use crate::message_kind;
 use std::borrow::{BorrowMut, Borrow};
+use std::fmt::Debug;
+use serde::de::StdError;
 
 pub struct MessageCodec<'a, M: MessageDecoder> {
     header: &'a MessageHeaderDecoded,
@@ -72,14 +74,10 @@ impl MessageDecoder for RequestBody {
     fn read_from(buf: &mut BytesMut, meta: &MessageHeaderDecoded) -> Result<Self::Message, Self::Error> {
         let mut reader = Cursor::new(buf.clone());
         let result = match meta.header.kind.as_str() {
-            message_kind::REQUEST_FETCH => {
-                let x = rmps::from_read::<_, FileFetchRequest>(&mut reader)?;
-                Ok(RequestBody::Fetch(x))
-            },
-            message_kind::REQUEST_LISTING => {
-                let x = rmps::from_read::<_, FileListingRequest>(&mut reader)?;
-                Ok(RequestBody::Listing(x))
-            },
+            message_kind::REQUEST_FETCH => FileFetchRequest::from_read(&mut reader),
+            message_kind::REQUEST_LISTING => FileListingRequest::from_read(&mut reader),
+            message_kind::REQUEST_ADD_NODE => DhtAddNodeRequest::from_read(&mut reader),
+            message_kind::REQUEST_REMOVE_NODE => DhtRemoveNodeRequest::from_read(&mut reader),
             _ => Err(rmps::decode::Error::OutOfRange),
         };
 
@@ -93,24 +91,17 @@ impl MessageDecoder for RequestBody {
 
 impl MessageDecoder for ResponseBody {
     type Message = Self;
-    type Error = rmps::decode::Error;
+    type Error = rmp_serde::decode::Error;
 
     fn read_from(buf: &mut BytesMut, meta: &MessageHeaderDecoded) -> Result<Self::Message, Self::Error> {
         let mut reader = Cursor::new(buf.clone());
         let kind = meta.header.kind.as_str();
         let result = match kind {
-            message_kind::RESPONSE_CHUNK => {
-                let x = rmps::from_read::<_, FileChunkResponse>(&mut reader)?;
-                Ok(ResponseBody::Chunk(x))
-            },
-            message_kind::RESPONSE_LISTING => {
-                let x = rmps::from_read::<_, FileListingResponse>(&mut reader)?;
-                Ok(ResponseBody::Listing(x))
-            }
-            _ => {
-                eprintln!("unsupported kind: '{}'", kind);
-                Err(rmps::decode::Error::OutOfRange)
-            },
+            message_kind::RESPONSE_CHUNK => FileChunkResponse::from_read(&mut reader),
+            message_kind::RESPONSE_LISTING => FileListingResponse::from_read(&mut reader),
+            message_kind::RESPONSE_ADD_NODE => DhtAddNodeResponse::from_read(&mut reader),
+            message_kind::RESPONSE_REMOVE_NODE => DhtRemoveNodeResponse::from_read(&mut reader),
+            _ => Err(rmps::decode::Error::OutOfRange),
         };
 
         if let Ok(_) = result {
@@ -162,13 +153,15 @@ impl serde::Serialize for ResponseBody {
         match self {
             ResponseBody::Chunk(x) => x.serialize(serializer),
             ResponseBody::Listing(x) => x.serialize(serializer),
+            ResponseBody::AddedNode(x) => x.serialize(serializer),
+            ResponseBody::RemovedNode(x) => x.serialize(serializer),
         }
     }
 }
 
 
 #[derive(Debug, Snafu)]
-pub enum MessageReadError<M: std::error::Error + 'static> {
+pub enum MessageReadError<M: Debug + AsErrorSource> {
     #[snafu(display("Peer disconnected (gracefully): {:?}", peer_addr))]
     PeerDisconnectedGracefully { peer_addr: Option<SocketAddr> },
 

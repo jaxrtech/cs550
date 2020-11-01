@@ -1,6 +1,7 @@
 extern crate serde;
 extern crate rmp_serde as rmps;
 extern crate tokio_util;
+extern crate derive_more;
 
 use std::io::{Cursor};
 use serde::{Deserialize, Serialize};
@@ -15,10 +16,18 @@ use async_trait::async_trait;
 pub mod messages;
 pub mod codec;
 pub mod buffer;
+pub mod nodes;
 
 pub mod message_kind {
     pub const REQUEST_LISTING: &str = "LIST";
     pub const RESPONSE_LISTING: &str = "FILES";
+
+    pub const REQUEST_ADD_NODE: &str = "DHT.ADD";
+    pub const RESPONSE_ADD_NODE: &str = "DHT.ADD.OK";
+
+    pub const REQUEST_REMOVE_NODE: &str = "DHT.DEL";
+    pub const RESPONSE_REMOVE_NODE: &str = "DHT.DEL.OK";
+
     pub const REQUEST_FETCH: &str = "FETCH";
     pub const RESPONSE_CHUNK: &str = "DATA";
 }

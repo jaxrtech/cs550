@@ -46,6 +46,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "derive_more",
  "rmp-serde",
  "serde",
  "serde_bytes",
@@ -115,6 +116,17 @@ checksum = "370f715b81112975b1b69db93e0b56ea4cd4e5002ac43b2da8474106a54096a1"
 dependencies = [
  "heck",
  "proc-macro-error",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "derive_more"
+version = "0.99.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41cb0e6161ad61ed084a36ba71fbba9e3ac5aee3606fb607fe08da6acbcf3d8c"
+dependencies = [
  "proc-macro2",
  "quote",
  "syn",

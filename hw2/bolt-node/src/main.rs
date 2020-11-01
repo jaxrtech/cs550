@@ -36,38 +36,18 @@ use clap::Clap;
 use bolt::buffer::BufferContext;
 use bolt::messages::{RequestBody, FileChunkResponse, ResponseBody};
 use bolt::codec::MessageDecoder;
+use bolt::nodes::try_listen_on;
 
 #[derive(Clap)]
-#[clap(version = "0.1", author = "Kevin K. <kbknapp@gmail.com>")]
+#[clap(version = "0.1", author = "Josh Bowden <jbowden@hawk.iit.edu>")]
 struct Opts {
     /// An alternative port to listen on
     #[clap(short, long, default_value = "8080")]
     port: u16,
 
-    /// Runs the node as the DHT node
-    #[clap(long)]
-    dht: bool,
-
     /// The root directory to serve files from
     #[clap(parse(from_os_str))]
     path: Option<PathBuf>,
-}
-
-async fn try_listen_on(host: &str, mut port: u16) -> tokio::io::Result<TcpListener> {
-    loop {
-        let mut listen_address: String = format!("{}:{}", host, port);
-        let mut listener = TcpListener::bind(&listen_address).await;
-        match &listener {
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                // Try again with any port
-                port = 0;
-                continue;
-            },
-            _ => {
-                return listener;
-            }
-        }
-    }
 }
 
 #[tokio::main]
