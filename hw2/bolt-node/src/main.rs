@@ -4,6 +4,8 @@ mod server;
 extern crate serde;
 extern crate futures;
 extern crate rmp_serde as rmps;
+extern crate pretty_env_logger;
+#[macro_use] extern crate log;
 
 use std::{io, env};
 use std::io::prelude::*;
@@ -32,6 +34,7 @@ use walkdir::{WalkDir, DirEntry};
 use snafu::{ResultExt, Snafu, OptionExt, IntoError, ensure};
 use url::Url;
 use clap::Clap;
+use log::{debug, info, warn, error};
 
 use bolt::buffer::BufferContext;
 use bolt::messages::{RequestBody, FileChunkResponse, ResponseBody};
@@ -52,18 +55,19 @@ struct Opts {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    pretty_env_logger::init();
     let opts: Opts = Opts::parse();
     let cwdir = env::current_dir().unwrap();
     let listen_port_preferred = opts.port;
     let root_directory = opts.path.unwrap_or(cwdir.clone());
-    println!("root = '{}'", &root_directory.to_string_lossy());
+    info!("root = '{}'", &root_directory.to_string_lossy());
 
     let mut listener = try_listen_on("127.0.0.1", listen_port_preferred).await?;
     let listen_address = listener.local_addr().unwrap();
     if listen_address.port() != listen_port_preferred {
-        eprintln!("warn: Unable to listen on specified port {} since its already in use. Using port {} instead.", listen_port_preferred, listen_address.port())
+        warn!("Unable to listen on specified port {} since its already in use. Using port {} instead.", listen_port_preferred, listen_address.port())
     }
-    println!("listening on {}", &listen_address);
+    info!("listening on {}", &listen_address);
 
     let (tx, mut rx) = watch::channel("".to_string());
     let handle = Handle::current();
@@ -87,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(line) = rx.recv().await {
             if line.is_empty() { continue; }
             cli::handle_cli_command(line.clone()).await;
-            println!("handled '{}'", line);
+            debug!("handled '{}'", line);
         }
     });
 

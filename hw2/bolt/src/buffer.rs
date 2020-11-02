@@ -1,5 +1,6 @@
 use std::io::Cursor;
 use bytes::BytesMut;
+use log::{trace, log_enabled, Level};
 use crate::codec::{MessageHeaderDecoded, MessageHeader};
 
 #[derive(PartialEq, Debug)]
@@ -47,7 +48,7 @@ impl BufferContext {
         let result = match parse_result {
             Ok(header) => {
                 let header_len = cursor.position() as u32;
-                // println!("[read] header len = {} bytes | {:?}", header_len, header);
+                trace!("[read] header len = {} bytes | {:?}", header_len, header);
                 self.set_header_with_len(header, header_len);
                 self.buffer.split_to(header_len as usize);
                 Ok(())
@@ -68,7 +69,9 @@ impl BufferContext {
             (_, Some(_)) => BufferState::WaitData,
         };
 
-        // println!("[buf] state = {:?} | len = {} | cap = {}", state, self.buffer.len(), self.buffer.capacity());
+        if log_enabled!(Level::Trace) {
+            trace!("[buf] state = {:?} | len = {} | cap = {}", state, self.buffer.len(), self.buffer.capacity());
+        }
         state
     }
 }

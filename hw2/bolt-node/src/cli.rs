@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 
 use snafu::{ResultExt, Snafu, OptionExt, IntoError, ensure};
 use url::Url;
+use log::{info, debug, error};
 
 use tokio::prelude::*;
 use tokio::fs::File;
@@ -69,16 +70,16 @@ async fn cmd_fetch(args: Vec<String>) -> Result<(), CommandError> {
     ensure!(!path.is_empty(), UrlMissingPath);
 
     let filename = Path::new(path).strip_prefix("/").unwrap();
-    println!("[client] downloading to '{}'", filename.to_string_lossy());
+    info!("[client] downloading to '{}'", filename.to_string_lossy());
     let mut output_file = File::create(filename).await
         .context(DownloadIoError)?;
 
     let req = FileFetchRequest { name: filename.to_string_lossy().to_string() };
     req.write_to(&mut client).await
         .context(MessageEncodingError)?;
-    println!("[client] sent request");
+    info!("[client] sent request");
 
-    println!("[client] waiting on response...");
+    info!("[client] waiting on response...");
     let mut size: Option<u64> = None;
     let mut pos = 0u64;
     let mut ctx = BufferContext::new(20 * 1024);
@@ -105,7 +106,7 @@ async fn cmd_fetch(args: Vec<String>) -> Result<(), CommandError> {
         }
     }
 
-    println!("client: done!");
+    info!("client: done!");
     Ok(())
 }
 
@@ -124,13 +125,13 @@ async fn cmd_list(args: Vec<&str>) -> Result<(), CommandError> {
     let req = messages::FileListingRequest::new();
     req.write_to(&mut client).await
         .context(MessageEncodingError)?;
-    println!("[client] sent request");
+    info!("[client] sent request");
 
-    println!("[client] waiting on response...");
+    info!("[client] waiting on response...");
     let resp_any = client.borrow_mut().read_next::<ResponseBody>(&mut ctx, peer_address).await
         .context(ReceiveError)?;
 
-    println!("client got {:?}", resp_any);
+    debug!("client got {:?}", resp_any);
     if let ResponseBody::Listing(resp) = resp_any {
         if resp.files.is_empty() {
             println!("(no files available)");
@@ -151,7 +152,7 @@ async fn cmd_list(args: Vec<&str>) -> Result<(), CommandError> {
 }
 
 pub async fn handle_cli_command(line: String) {
-    println!("debug: got '{}'", line);
+    debug!("got '{}'", line);
 
     let mut parts: Vec<&str> = line.split_whitespace().collect();
     let result = if let Some(command) = parts.get(0) {
@@ -167,7 +168,7 @@ pub async fn handle_cli_command(line: String) {
                 Some(Ok(()))
             }
             _ => {
-                println!("unknown command {}", command);
+                error!("unknown command {}", command);
                 None
             }
         }
@@ -176,6 +177,6 @@ pub async fn handle_cli_command(line: String) {
     };
 
     if let Some(Err(e)) = result {
-        eprintln!("{}", e);
+        error!("{}", e);
     }
 }

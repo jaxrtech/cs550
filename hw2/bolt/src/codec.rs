@@ -1,6 +1,8 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::marker::PhantomData;
+use std::borrow::{BorrowMut, Borrow};
+use std::fmt::Debug;
 
 use snafu::{ResultExt, Snafu, OptionExt, IntoError, ensure, AsErrorSource};
 use async_trait::async_trait;
@@ -9,13 +11,12 @@ use tokio_util::codec::Decoder;
 use bytes::BytesMut;
 use rmps::{Serializer};
 use serde::{Deserialize, Serialize};
+use serde::de::StdError;
+use log::{info};
 
 use crate::messages::{RequestBody, ResponseBody, FileChunkResponse, FileListingResponse, MessageKindTagged, FileFetchRequest, FileListingRequest, MessageFromRead, DhtAddNodeResponse, DhtRemoveNodeResponse, DhtAddNodeRequest, DhtRemoveNodeRequest};
 use crate::buffer::{BufferContext, BufferState};
 use crate::message_kind;
-use std::borrow::{BorrowMut, Borrow};
-use std::fmt::Debug;
-use serde::de::StdError;
 
 pub struct MessageCodec<'a, M: MessageDecoder> {
     header: &'a MessageHeaderDecoded,
@@ -208,7 +209,7 @@ pub async fn read_next<R: MessageDecoder, S: AsyncReadExt + Unpin>(
             let n = match socket.read_buf(&mut ctx.buffer).await {
                 // socket closed
                 Ok(n) if n == 0 => {
-                    println!("[{}] peer disconnected", peer_addr_str);
+                    info!("[{}] peer disconnected", peer_addr_str);
                     (PeerDisconnectedGracefully { peer_addr }).fail()
                 }
                 Ok(n) => Ok(n),
