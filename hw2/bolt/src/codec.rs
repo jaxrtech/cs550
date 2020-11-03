@@ -4,17 +4,16 @@ use std::marker::PhantomData;
 use std::borrow::{BorrowMut, Borrow};
 use std::fmt::Debug;
 
-use snafu::{ResultExt, Snafu, OptionExt, IntoError, ensure, AsErrorSource};
+use snafu::{ResultExt, Snafu, OptionExt, IntoError, AsErrorSource};
 use async_trait::async_trait;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio_util::codec::Decoder;
 use bytes::BytesMut;
 use rmps::{Serializer};
 use serde::{Deserialize, Serialize};
-use serde::de::StdError;
 use log::{info};
 
-use crate::messages::{RequestBody, ResponseBody, FileChunkResponse, FileListingResponse, MessageKindTagged, FileFetchRequest, FileListingRequest, MessageFromRead, DhtAddNodeResponse, DhtRemoveNodeResponse, DhtAddNodeRequest, DhtRemoveNodeRequest};
+use crate::messages::{RequestBody, ResponseBody, FileChunkResponse, FileListingResponse, MessageKindTagged, FileFetchRequest, FileListingRequest, RmpFromRead, DhtAddNodeResponse, DhtRemoveNodeResponse, DhtAddNodeRequest, DhtRemoveNodeRequest};
 use crate::buffer::{BufferContext, BufferState};
 use crate::message_kind;
 
@@ -41,13 +40,13 @@ impl<'a, M: MessageDecoder> Decoder for MessageCodec<'a, M>
 }
 
 
-#[derive(Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct MessageHeader {
     pub kind: String,
     pub length: u32,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct MessageHeaderDecoded {
     pub header: MessageHeader,
     pub header_len: u32,
@@ -67,6 +66,10 @@ pub trait MessageDecoder {
     type Error: std::error::Error + 'static;
 
     fn read_from(buf: &mut BytesMut, meta: &MessageHeaderDecoded) -> Result<Self::Message, Self::Error>;
+}
+
+pub trait MessageDecoderSendable : MessageDecoder {
+    type Message: Send;
 }
 
 impl MessageDecoder for RequestBody {

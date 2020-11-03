@@ -164,7 +164,7 @@ pub async fn handle_cli_command(line: String) {
             "fetch" => {
                 parts.remove(0);
                 let parts: Vec<String> = parts.iter().map(|x| x.clone().to_string()).collect();
-                tokio::spawn(async move { cmd_fetch(parts).await; });
+                tokio::spawn(async move { cmd_fetch(parts).await.unwrap(); });
                 Some(Ok(()))
             }
             _ => {

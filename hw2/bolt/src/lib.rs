@@ -3,20 +3,11 @@ extern crate rmp_serde as rmps;
 extern crate tokio_util;
 extern crate derive_more;
 
-use std::io::{Cursor};
-use serde::{Deserialize, Serialize};
-use bytes::{BytesMut};
-use rmps::{Serializer};
-use rmps::decode::Error;
-use tokio_util::codec::Decoder;
-use serde::export::PhantomData;
-use tokio::prelude::io::AsyncWriteExt;
-use async_trait::async_trait;
-
 pub mod messages;
 pub mod codec;
 pub mod buffer;
 pub mod nodes;
+pub mod consensus;
 
 pub mod message_kind {
     pub const REQUEST_LISTING: &str = "LIST";

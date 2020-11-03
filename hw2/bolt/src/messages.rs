@@ -1,6 +1,5 @@
 use crate::message_kind;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
 use std::io::Read;
 use serde::de::DeserializeOwned;
 use derive_more::From;
@@ -28,21 +27,21 @@ pub enum RequestBody {
     RemoveNode(DhtRemoveNodeRequest),
 }
 
-pub trait MessageFromRead
+pub trait RmpFromRead
     where Self: MessageKindTagged + DeserializeOwned + Sized
 {
     type Error;
     fn from_read<R, C>(reader: R) -> Result<C, Self::Error>
         where R: Read,
               C: From<Self>,
-              <Self as MessageFromRead>::Error: From<rmps::decode::Error>
+              <Self as RmpFromRead>::Error: From<rmps::decode::Error>
     {
         let x = rmps::from_read::<R, Self>(reader)?;
         Ok(x.into())
     }
 }
 
-impl<S> MessageFromRead for S
+impl<S> RmpFromRead for S
     where S: MessageKindTagged + for<'de> serde::Deserialize<'de>
 {
     type Error = rmp_serde::decode::Error;
