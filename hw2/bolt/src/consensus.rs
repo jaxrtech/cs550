@@ -19,9 +19,9 @@ use uuid::Uuid;
 use log::{debug};
 use bytes::BytesMut;
 
-use crate::codec::{MessageHeader, MessageHeaderDecoded, MessageDecoder, MessageDecoderSendable};
-use crate::consensus::messages::MessageBody;
+use crate::codec::{MessageHeader, MessageHeaderDecoded, MessageDecoder};
 use crate::consensus::ConsensusState::{Candidate, Follower};
+use std::borrow::{BorrowMut};
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub enum ConsensusState {
@@ -55,7 +55,7 @@ mod messages {
     use std::io::Cursor;
     use std::borrow::Borrow;
     use derive_more::From;
-    use bytes::BytesMut;
+    use bytes::{BytesMut, Buf};
     use serde::{Deserialize, Serialize};
     use crate::consensus::{TermIndex, NodeId};
     use crate::codec::{MessageDecoder, MessageHeaderDecoded};
@@ -124,7 +124,7 @@ mod messages {
             };
 
             if let Ok(_) = result {
-                buf.split_to(reader.borrow().position() as usize);
+                buf.advance(reader.borrow().position() as usize);
             }
 
             result
@@ -178,7 +178,9 @@ pub struct Consensus {
     ctx: RwLock<ConsensusInternal>,
 }
 
-struct NodeEndpoint<M: MessageDecoderSendable> {
+type NodeEndpointChannel<M> = broadcast::Sender<NodeEndpointNotification<M>>;
+
+struct NodeEndpoint<M: MessageDecoder> {
     send: SendHalf,
     chan: Arc<broadcast::Sender<NodeEndpointNotification<M>>>,
     recv_task: JoinHandle<()>,
@@ -188,33 +190,48 @@ struct NodeEndpoint<M: MessageDecoderSendable> {
 #[derive(Copy, Clone)]
 struct NodeEndpointOptions {
     bind_address: SocketAddrV4,
-    multicast_address: SocketAddrV4,
+    multicast_address: Ipv4Addr,
+}
+
+impl Default for NodeEndpointOptions {
+    fn default() -> Self {
+        let listen_host = Ipv4Addr::from_str("0.0.0.0").unwrap();
+        let port = 24000u16;
+        let multicast_address = Ipv4Addr::from_str("239.0.0.1").unwrap();
+        NodeEndpointOptions {
+            bind_address: SocketAddrV4::new(listen_host, port),
+            multicast_address
+        }
+    }
 }
 
 struct PeerStatus {
     last_addr: SocketAddrV4,
 }
 
-type NodeEndpointNotification<M: MessageDecoderSendable> =
-    (<M as MessageDecoderSendable>::Message, SocketAddr);
+type NodeEndpointNotification<M> =
+    (<M as MessageDecoder>::Message, SocketAddr);
 
-impl<M: MessageDecoderSendable> NodeEndpoint<M> {
+impl<M> NodeEndpoint<M>
+    where M: MessageDecoder,
+          <M as MessageDecoder>::Message: 'static
+{
     async fn start_any() -> Result<NodeEndpoint<M>, Box<dyn Error>> {
-        let host = Ipv4Addr::from_str("0.0.0.0").unwrap();
-        let port = 24000u16;
-        Self::start(SocketAddr::new(host.into(), port)).await
+        Self::start(Default::default()).await
     }
 
     async fn start(options: NodeEndpointOptions) -> Result<NodeEndpoint<M>, Box<dyn Error>> {
-        let mut socket = UdpSocket::bind(options.bind_address).await?;
-        socket.join_multicast_v4(*options.bind_address.ip(), *options.bind_address.ip())?;
-        let (mut recv, send) = socket.split();
+        let socket = UdpSocket::bind(options.bind_address).await?;
+        socket.join_multicast_v4(options.multicast_address, *options.bind_address.ip())?;
+        let (recv, send) = socket.split();
         let (tx, _) = broadcast::channel(100);
         let tx = Arc::new(tx);
         let stop_signal = Arc::new(AtomicBool::new(false));
 
+        let tx_clone = tx.clone();
+        let stop_signal_clone = stop_signal.clone();
         let handle = tokio::spawn(async move {
-            NodeEndpoint::<M>::handle_recv(recv, tx.clone(), stop_signal.clone()).await.unwrap()
+            NodeEndpoint::<M>::handle_recv(recv, tx_clone, stop_signal_clone).await.unwrap();
         });
 
         Ok(NodeEndpoint {
@@ -225,18 +242,19 @@ impl<M: MessageDecoderSendable> NodeEndpoint<M> {
         })
     }
 
-    async fn subscribe(&self) -> broadcast::Receiver<M> {
-        self.send.subscribe()
+    async fn subscribe(&self) -> broadcast::Receiver<NodeEndpointNotification<M>> {
+        self.chan.subscribe()
     }
 
-    async fn stop(&self) -> () {
+    async fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.stop_signal.swap(true, Ordering::Relaxed);
-        self.recv_task.await?
+        self.recv_task.borrow_mut().await?;
+        Ok(())
     }
 
     async fn handle_recv(
         mut recv: RecvHalf,
-        mut chan: Arc<broadcast::Sender<NodeEndpointNotification<M>>>,
+        chan: Arc<broadcast::Sender<NodeEndpointNotification<M>>>,
         stop_signal: Arc<AtomicBool>,
     ) -> Result<(), Box<dyn Error>> {
         let mut buf = BytesMut::with_capacity(4 * 1024);
@@ -277,17 +295,17 @@ impl<M: MessageDecoderSendable> NodeEndpoint<M> {
     }
 }
 
-async fn handle_message(body: messages::MessageBody) {
-
-    match body {
-        MessageBody::RequestVote(_) => {},
-        MessageBody::Hello(hello) => {
-            let mut lock = cache.write().await;
-            lock.insert(hello.node_id, sender, heartbeat_lifespan);
-        }
-        MessageBody::VoteReply(reply) => {}
-    }
-}
+// async fn handle_message(body: messages::MessageBody) {
+//
+//     match body {
+//         MessageBody::RequestVote(_) => {},
+//         MessageBody::Hello(hello) => {
+//             let mut lock = cache.write().await;
+//             lock.insert(hello.node_id, sender, heartbeat_lifespan);
+//         }
+//         MessageBody::VoteReply(reply) => {}
+//     }
+// }
 
 impl Consensus {
     fn new() -> Consensus {
@@ -301,7 +319,7 @@ impl Consensus {
         let mut rng = rand::thread_rng();
         let timeout = get_election_timeout(&mut rng);
 
-        let mut lock = self.ctx.read().await;
+        let lock = self.ctx.read().await;
         let starting_term = lock.current_term;
         drop(lock);
 
@@ -317,7 +335,7 @@ impl Consensus {
         loop {
             interval.tick().await;
 
-            let mut lock = self.ctx.read().await;
+            let lock = self.ctx.read().await;
             let state = lock.state;
             let current_term = lock.current_term;
             let election_reset_event = lock.election_reset_event;
@@ -344,15 +362,14 @@ impl Consensus {
     }
 
     async fn start_election(&self) {
-        let ctx = self.ctx.write().await;
+        let mut ctx = self.ctx.write().await;
         ctx.state = Candidate;
         ctx.current_term += 1;
         let current_term_snapshot = ctx.current_term;
         ctx.election_reset_event = Instant::now();
         ctx.voted_for = Some(self.id);
+        debug!("Transitioned to Candidate (current term = {}) | log = {:#?}", current_term_snapshot, ctx.log);
         drop(ctx);
-
-        debug!("Transitioned to Candidate (current term = {}) | log = {}", current_term_snapshot, ctx.log);
 
         let mut votes_received = 1u32;
 

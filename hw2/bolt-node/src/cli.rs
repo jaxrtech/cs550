@@ -2,7 +2,7 @@ use std::borrow::{Borrow, BorrowMut};
 use std::path::Path;
 use std::net::SocketAddr;
 
-use snafu::{ResultExt, Snafu, OptionExt, IntoError, ensure};
+use snafu::{ResultExt, Snafu, OptionExt, ensure};
 use url::Url;
 use log::{info, debug, error};
 

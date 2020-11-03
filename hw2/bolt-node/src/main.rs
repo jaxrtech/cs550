@@ -1,44 +1,18 @@
 mod cli;
 mod server;
 
-extern crate serde;
-extern crate futures;
 extern crate rmp_serde as rmps;
-extern crate pretty_env_logger;
-#[macro_use] extern crate log;
 
 use std::{io, env};
 use std::io::prelude::*;
-use std::io::{Cursor, ErrorKind, BufReader};
 use std::thread;
-use std::net::{SocketAddr, SocketAddrV4};
-use std::fmt::Debug;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::cell::RefCell;
-use std::borrow::{BorrowMut, Borrow};
-use std::sync::{Arc, RwLock};
-use std::ops::DerefMut;
+use std::path::{PathBuf};
 
-use tokio::prelude::*;
 use tokio::runtime::Handle;
-use tokio::task;
-use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
-use tokio::sync::{watch, Mutex};
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-
-use futures::executor::block_on;
-use bytes::BytesMut;
-use walkdir::{WalkDir, DirEntry};
-use snafu::{ResultExt, Snafu, OptionExt, IntoError, ensure};
-use url::Url;
+use tokio::sync::{watch};
 use clap::Clap;
 use log::{debug, info, warn, error};
 
-use bolt::buffer::BufferContext;
-use bolt::messages::{RequestBody, FileChunkResponse, ResponseBody};
-use bolt::codec::MessageDecoder;
 use bolt::nodes::try_listen_on;
 
 #[derive(Clap)]
@@ -70,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("listening on {}", &listen_address);
 
     let (tx, mut rx) = watch::channel("".to_string());
-    let handle = Handle::current();
+    let _handle = Handle::current();
     thread::spawn(move || {
         print!("> ");
         io::stdout().flush().unwrap();

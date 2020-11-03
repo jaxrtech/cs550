@@ -1,5 +1,5 @@
 use std::io::Cursor;
-use bytes::BytesMut;
+use bytes::{BytesMut, Buf};
 use log::{trace, log_enabled, Level};
 use crate::codec::{MessageHeaderDecoded, MessageHeader};
 
@@ -50,7 +50,7 @@ impl BufferContext {
                 let header_len = cursor.position() as u32;
                 trace!("[read] header len = {} bytes | {:?}", header_len, header);
                 self.set_header_with_len(header, header_len);
-                self.buffer.split_to(header_len as usize);
+                self.buffer.advance(header_len as usize);
                 Ok(())
             }
             Err(e) => Err(e)

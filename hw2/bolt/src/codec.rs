@@ -4,11 +4,11 @@ use std::marker::PhantomData;
 use std::borrow::{BorrowMut, Borrow};
 use std::fmt::Debug;
 
-use snafu::{ResultExt, Snafu, OptionExt, IntoError, AsErrorSource};
+use snafu::{ResultExt, Snafu, IntoError, AsErrorSource};
 use async_trait::async_trait;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio_util::codec::Decoder;
-use bytes::BytesMut;
+use bytes::{BytesMut, Buf};
 use rmps::{Serializer};
 use serde::{Deserialize, Serialize};
 use log::{info};
@@ -62,14 +62,10 @@ impl MessageHeaderDecoded {
 }
 
 pub trait MessageDecoder {
-    type Message;
+    type Message: Send;
     type Error: std::error::Error + 'static;
 
     fn read_from(buf: &mut BytesMut, meta: &MessageHeaderDecoded) -> Result<Self::Message, Self::Error>;
-}
-
-pub trait MessageDecoderSendable : MessageDecoder {
-    type Message: Send;
 }
 
 impl MessageDecoder for RequestBody {
@@ -86,7 +82,7 @@ impl MessageDecoder for RequestBody {
         };
 
         if let Ok(_) = result {
-            buf.split_to(reader.borrow().position() as usize);
+            buf.advance(reader.borrow().position() as usize);
         }
 
         result
@@ -111,7 +107,7 @@ impl MessageDecoder for ResponseBody {
         if let Ok(_) = result {
             let len = reader.borrow().position() as usize;
             // println!("[read] chop {} bytes", len);
-            buf.split_to(len);
+            buf.advance(len);
         }
 
         result
@@ -209,7 +205,7 @@ pub async fn read_next<R: MessageDecoder, S: AsyncReadExt + Unpin>(
         let mut cur_state = ctx.get_state();
         if cur_state != BufferState::Done {
             // println!("[{}] (state = {:?}) waiting for read...", peer_addr_str, cur_state);
-            let n = match socket.read_buf(&mut ctx.buffer).await {
+            let _n = match socket.read_buf(&mut ctx.buffer).await {
                 // socket closed
                 Ok(n) if n == 0 => {
                     info!("[{}] peer disconnected", peer_addr_str);
@@ -225,7 +221,7 @@ pub async fn read_next<R: MessageDecoder, S: AsyncReadExt + Unpin>(
             // println!("[{}] read {} bytes (len = {}, cap = {})", peer_addr_str, n, ctx.buffer.len(), ctx.buffer.capacity());
 
             if cur_state == BufferState::Empty || cur_state == BufferState::WaitHeader {
-                let header_result = ctx.try_read_header();
+                let _header_result = ctx.try_read_header();
                 // println!("[read] header result = {:?}", header_result)
             }
 
@@ -235,7 +231,7 @@ pub async fn read_next<R: MessageDecoder, S: AsyncReadExt + Unpin>(
         // Check if we have read the body at this point
         if cur_state == BufferState::Done {
             let target = ctx.header_with_target.as_ref().unwrap();
-            let kind = &target.header.kind;
+            // let kind = &target.header.kind;
             // println!("[read] got data of {} bytes with message of kind {:?}", target.data_len(), kind);
 
             let message = R::read_from(ctx.buffer.borrow_mut(), &target)

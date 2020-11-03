@@ -13,13 +13,13 @@ use walkdir::{WalkDir, DirEntry};
 use log::{debug, info, error};
 
 use bolt::buffer::BufferContext;
-use bolt::codec::{read_next, MessageEncoder, MessageReader};
+use bolt::codec::{MessageEncoder, MessageReader};
 use bolt::messages::{RequestBody, ResponseBody, FileInfo};
 use bolt::messages;
 
 pub async fn run(listener: &mut TcpListener, root_directory: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     loop {
-        let (mut socket_raw, peer_address) = listener.accept().await?;
+        let (socket_raw, peer_address) = listener.accept().await?;
         let (socket_read, socket_write) = socket_raw.into_split();
         let socket_read = Arc::new(Mutex::new(socket_read));
         let socket_write = Arc::new(Mutex::new(socket_write));
@@ -76,12 +76,14 @@ fn handle_fetch(fetch: messages::FileFetchRequest, socket_ref: Arc<Mutex<OwnedWr
         } else { raw_path };
         let absolute_path = root_directory.join(filename);
         debug!("[server] fetch request for '{}'", &absolute_path.to_string_lossy());
-        let mut file = File::open(absolute_path.as_path()).await;
-        if let Err(e) = file {
-            error!("[server] failed to open file '{}': {}", &absolute_path.to_string_lossy(), e);
-            return;
-        }
-        let mut file = file.unwrap();
+
+        let mut file = match File::open(absolute_path.as_path()).await {
+            Ok(f) => f,
+            Err(e) => {
+                error!("[server] failed to open file '{}': {}", &absolute_path.to_string_lossy(), e);
+                return;
+            },
+        };
 
         let total_size = file.metadata().await.unwrap().len();
         let mut buf = [0u8; 32 * 1024];
@@ -105,7 +107,7 @@ fn handle_fetch(fetch: messages::FileFetchRequest, socket_ref: Arc<Mutex<OwnedWr
             }
 
             off += num_read as u64;
-            let progress = ((off as f64 / total_size as f64) * 100.0);
+            // let progress = ((off as f64 / total_size as f64) * 100.0);
             // println!("[server] sent '{}' ({}/{} bytes | {}%)", fetch.name, off, total_size, progress);
         }
 
