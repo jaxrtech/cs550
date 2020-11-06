@@ -14,6 +14,7 @@ use clap::Clap;
 use log::{debug, info, warn, error};
 
 use bolt::nodes::try_listen_on;
+use bolt::consensus::Consensus;
 
 #[derive(Clap)]
 #[clap(version = "0.1", author = "Josh Bowden <jbowden@hawk.iit.edu>")]
@@ -69,5 +70,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    Consensus::start(Default::default()).await?;
     server::run(&mut listener, root_directory).await
 }

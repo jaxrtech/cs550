@@ -1,10 +1,10 @@
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::net::SocketAddr;
 use std::marker::PhantomData;
 use std::borrow::{BorrowMut, Borrow};
 use std::fmt::Debug;
 
-use snafu::{ResultExt, Snafu, IntoError, AsErrorSource};
+use snafu::{ResultExt, Snafu, IntoError, AsErrorSource, Error};
 use async_trait::async_trait;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio_util::codec::Decoder;
@@ -62,7 +62,7 @@ impl MessageHeaderDecoded {
 }
 
 pub trait MessageDecoder {
-    type Message: Send;
+    type Message: Send + Debug;
     type Error: std::error::Error + 'static;
 
     fn read_from(buf: &mut BytesMut, meta: &MessageHeaderDecoded) -> Result<Self::Message, Self::Error>;
@@ -119,6 +119,34 @@ impl MessageDecoder for ResponseBody {
 pub trait MessageEncoder {
     type Message: MessageKindTagged + Serialize;
     async fn write_to<'a, S: AsyncWriteExt + Unpin + Send>(self, stream: S) -> Result<(), Box<dyn std::error::Error>>;
+}
+
+pub trait MessageEncoderToBuf {
+    type Message: MessageKindTagged + Serialize;
+    fn write_to_blocking<'a, S: Write>(self, stream: &'a mut S) -> Result<(), Box<dyn std::error::Error>>;
+}
+
+impl<M> MessageEncoderToBuf for M
+    where M: MessageKindTagged + Serialize
+{
+    type Message = M;
+
+    fn write_to_blocking<'a, S: Write>(self, stream: &'a mut S) -> Result<(), Box<dyn Error>> {
+        let mut message_buf = Vec::new();
+        self.serialize(&mut Serializer::new(&mut message_buf))?;
+
+        let header = MessageHeader {
+            kind: self.kind().into(),
+            length: message_buf.len() as u32,
+        };
+        let mut header_buf = Vec::new();
+        header.serialize(&mut Serializer::new(&mut header_buf))?;
+
+        stream.write_all(&header_buf)?;
+        stream.write_all(&message_buf)?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]

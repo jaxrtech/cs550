@@ -8,6 +8,7 @@ pub mod codec;
 pub mod buffer;
 pub mod nodes;
 pub mod consensus;
+mod util;
 
 pub mod message_kind {
     pub const REQUEST_LISTING: &str = "LIST";

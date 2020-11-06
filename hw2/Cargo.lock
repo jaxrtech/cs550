@@ -58,6 +58,7 @@ dependencies = [
  "derive_more",
  "evmap",
  "log",
+ "net2",
  "rand",
  "rmp-serde",
  "serde",
